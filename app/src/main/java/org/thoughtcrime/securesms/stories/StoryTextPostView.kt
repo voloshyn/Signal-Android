@@ -4,11 +4,9 @@ import android.content.Context
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.util.AttributeSet
-import android.util.TypedValue
 import android.view.View
 import android.widget.ImageView
 import androidx.annotation.ColorInt
-import androidx.annotation.Px
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.doOnNextLayout
@@ -48,6 +46,14 @@ class StoryTextPostView @JvmOverloads constructor(
     TextStoryTextWatcher.install(textView)
   }
 
+  fun getLinkPreviewThumbnailWidth(useLargeThumbnail: Boolean): Int {
+    return linkPreviewView.getThumbnailViewWidth(useLargeThumbnail)
+  }
+
+  fun getLinkPreviewThumbnailHeight(useLargeThumbnail: Boolean): Int {
+    return linkPreviewView.getThumbnailViewHeight(useLargeThumbnail)
+  }
+
   fun showCloseButton() {
     linkPreviewView.setCanClose(true)
   }
@@ -75,10 +81,6 @@ class StoryTextPostView @JvmOverloads constructor(
   private fun setText(text: CharSequence, isPlaceholder: Boolean) {
     this.isPlaceholder = isPlaceholder
     textView.text = text
-  }
-
-  private fun setTextSize(@Px textSize: Float) {
-    textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSize)
   }
 
   private fun setTextGravity(textAlignment: TextAlignment) {
@@ -148,12 +150,16 @@ class StoryTextPostView @JvmOverloads constructor(
     postAdjustLinkPreviewTranslationY()
   }
 
-  fun bindLinkPreview(linkPreview: LinkPreview?): ListenableFuture<Boolean> {
-    return linkPreviewView.bind(linkPreview, View.GONE)
+  fun bindLinkPreview(linkPreview: LinkPreview?, useLargeThumbnail: Boolean, loadThumbnail: Boolean = true): ListenableFuture<Boolean> {
+    return linkPreviewView.bind(linkPreview, View.GONE, useLargeThumbnail, loadThumbnail)
   }
 
-  fun bindLinkPreviewState(linkPreviewState: LinkPreviewViewModel.LinkPreviewState, hiddenVisibility: Int) {
-    linkPreviewView.bind(linkPreviewState, hiddenVisibility)
+  fun setLinkPreviewDrawable(drawable: Drawable?, useLargeThumbnail: Boolean) {
+    linkPreviewView.setThumbnailDrawable(drawable, useLargeThumbnail)
+  }
+
+  fun bindLinkPreviewState(linkPreviewState: LinkPreviewViewModel.LinkPreviewState, hiddenVisibility: Int, useLargeThumbnail: Boolean) {
+    linkPreviewView.bind(linkPreviewState, hiddenVisibility, useLargeThumbnail)
   }
 
   fun postAdjustLinkPreviewTranslationY() {
@@ -172,7 +178,7 @@ class StoryTextPostView @JvmOverloads constructor(
   }
 
   fun setLinkPreviewClickListener(onClickListener: OnClickListener?) {
-    linkPreviewView.setOnClickListener(onClickListener)
+    linkPreviewView.setOnPreviewClickListener(onClickListener)
   }
 
   fun showPostContent() {
@@ -186,7 +192,7 @@ class StoryTextPostView @JvmOverloads constructor(
   }
 
   private fun canDisplayText(): Boolean {
-    return !(linkPreviewView.isVisible && isPlaceholder)
+    return !(linkPreviewView.isVisible && (isPlaceholder || textView.text.isEmpty()))
   }
 
   private fun adjustLinkPreviewTranslationY() {

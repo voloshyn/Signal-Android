@@ -6,10 +6,13 @@ import android.view.View
 import android.view.View.OnLongClickListener
 import android.view.ViewGroup
 import androidx.appcompat.widget.AppCompatImageButton
+import com.google.android.material.snackbar.Snackbar
 import org.signal.core.util.logging.Log
+import org.thoughtcrime.securesms.R
 import org.thoughtcrime.securesms.components.menu.ActionItem
 import org.thoughtcrime.securesms.components.menu.SignalContextMenu
 import org.thoughtcrime.securesms.conversation.MessageSendType
+import org.thoughtcrime.securesms.keyvalue.SignalStore
 import org.thoughtcrime.securesms.util.ViewUtil
 import java.lang.AssertionError
 import java.util.concurrent.CopyOnWriteArrayList
@@ -28,8 +31,10 @@ class SendButton(context: Context, attributeSet: AttributeSet?) : AppCompatImage
 
   private var availableSendTypes: List<MessageSendType> = MessageSendType.getAllAvailable(context, false)
   private var activeMessageSendType: MessageSendType? = null
-  private var defaultTransportType: MessageSendType.TransportType = MessageSendType.TransportType.SMS
+  private var defaultTransportType: MessageSendType.TransportType = MessageSendType.TransportType.SIGNAL
   private var defaultSubscriptionId: Int? = null
+
+  lateinit var snackbarContainer: View
   private var popupContainer: ViewGroup? = null
 
   init {
@@ -95,15 +100,10 @@ class SendButton(context: Context, attributeSet: AttributeSet?) : AppCompatImage
 
   fun resetAvailableTransports(isMediaMessage: Boolean) {
     availableSendTypes = MessageSendType.getAllAvailable(context, isMediaMessage)
-
-    if (!availableSendTypes.contains(activeMessageSendType)) {
-      Log.w(TAG, "[resetAvailableTransports] The active send type is no longer available. Unsetting.")
-      setSendType(null)
-    } else {
-      defaultTransportType = MessageSendType.TransportType.SMS
-      defaultSubscriptionId = null
-      onSelectionChanged(newType = selectedSendType, isManualSelection = false)
-    }
+    activeMessageSendType = null
+    defaultTransportType = MessageSendType.TransportType.SIGNAL
+    defaultSubscriptionId = null
+    onSelectionChanged(newType = selectedSendType, isManualSelection = false)
   }
 
   fun disableTransportType(type: MessageSendType.TransportType) {
@@ -151,8 +151,17 @@ class SendButton(context: Context, attributeSet: AttributeSet?) : AppCompatImage
   }
 
   override fun onLongClick(v: View): Boolean {
-    if (!isEnabled || availableSendTypes.size == 1) {
+    if (!isEnabled) {
       return false
+    }
+
+    if (availableSendTypes.size == 1) {
+      return if (!SignalStore.misc().smsExportPhase.allowSmsFeatures()) {
+        Snackbar.make(snackbarContainer, R.string.InputPanel__sms_messaging_is_no_longer_supported_in_signal, Snackbar.LENGTH_SHORT).show()
+        true
+      } else {
+        false
+      }
     }
 
     val currentlySelected: MessageSendType = selectedSendType

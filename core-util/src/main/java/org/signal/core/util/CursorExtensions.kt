@@ -31,6 +31,10 @@ fun Cursor.requireLong(column: String): Long {
   return CursorUtil.requireLong(this, column)
 }
 
+fun Cursor.optionalLong(column: String): Optional<Long> {
+  return CursorUtil.getLong(this, column)
+}
+
 fun Cursor.requireBoolean(column: String): Boolean {
   return CursorUtil.requireInt(this, column) != 0
 }
@@ -63,6 +67,18 @@ fun <T> Cursor.requireObject(column: String, serializer: StringSerializer<T>): T
   return serializer.deserialize(CursorUtil.requireString(this, column))
 }
 
+@JvmOverloads
+fun Cursor.readToSingleLong(defaultValue: Long = 0): Long {
+  return use {
+    if (it.moveToFirst()) {
+      it.getLong(0)
+    } else {
+      defaultValue
+    }
+  }
+}
+
+@JvmOverloads
 inline fun <T> Cursor.readToList(predicate: (T) -> Boolean = { true }, mapper: (Cursor) -> T): List<T> {
   val list = mutableListOf<T>()
   use {
@@ -74,6 +90,19 @@ inline fun <T> Cursor.readToList(predicate: (T) -> Boolean = { true }, mapper: (
     }
   }
   return list
+}
+
+inline fun <T> Cursor.readToSet(predicate: (T) -> Boolean = { true }, mapper: (Cursor) -> T): Set<T> {
+  val set = mutableSetOf<T>()
+  use {
+    while (moveToNext()) {
+      val record = mapper(this)
+      if (predicate(record)) {
+        set += mapper(this)
+      }
+    }
+  }
+  return set
 }
 
 fun Boolean.toInt(): Int = if (this) 1 else 0

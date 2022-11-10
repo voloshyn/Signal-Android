@@ -1,12 +1,9 @@
 package org.signal.core.util
 
-import androidx.sqlite.db.SupportSQLiteDatabase
 import android.content.ContentValues
 import android.text.TextUtils
 import androidx.annotation.VisibleForTesting
-import java.lang.NullPointerException
-import java.lang.StringBuilder
-import java.util.ArrayList
+import androidx.sqlite.db.SupportSQLiteDatabase
 import java.util.LinkedList
 import java.util.Locale
 import java.util.stream.Collectors
@@ -14,6 +11,9 @@ import java.util.stream.Collectors
 object SqlUtil {
   /** The maximum number of arguments (i.e. question marks) allowed in a SQL statement.  */
   private const val MAX_QUERY_ARGS = 999
+
+  @JvmField
+  val COUNT = arrayOf("COUNT(*)")
 
   @JvmStatic
   fun tableExists(db: SupportSQLiteDatabase, table: String): Boolean {
@@ -63,7 +63,7 @@ object SqlUtil {
     return objects.map {
       when (it) {
         null -> throw NullPointerException("Cannot have null arg!")
-        is DatabaseId -> (it as DatabaseId?)!!.serialize()
+        is DatabaseId -> it.serialize()
         else -> it.toString()
       }
     }.toTypedArray()
@@ -185,21 +185,16 @@ object SqlUtil {
 
   /**
    * A convenient way of making queries in the form: WHERE [column] IN (?, ?, ..., ?)
-   * Handles breaking it 
+   * Handles breaking it
    */
+  @JvmOverloads
   @JvmStatic
-  fun buildCollectionQuery(column: String, values: Collection<Any?>): List<Query> {
-    return buildCollectionQuery(column, values, MAX_QUERY_ARGS)
-  }
-
-  @VisibleForTesting
-  @JvmStatic
-  fun buildCollectionQuery(column: String, values: Collection<Any?>, maxSize: Int): List<Query> {
+  fun buildCollectionQuery(column: String, values: Collection<Any?>, prefix: String = "", maxSize: Int = MAX_QUERY_ARGS): List<Query> {
     require(!values.isEmpty()) { "Must have values!" }
 
     return values
       .chunked(maxSize)
-      .map { batch -> buildSingleCollectionQuery(column, batch) }
+      .map { batch -> buildSingleCollectionQuery(column, batch, prefix) }
   }
 
   /**
@@ -208,8 +203,9 @@ object SqlUtil {
    * Important: Should only be used if you know the number of values is < 1000. Otherwise you risk creating a SQL statement this is too large.
    * Prefer [buildCollectionQuery] when possible.
    */
+  @JvmOverloads
   @JvmStatic
-  fun buildSingleCollectionQuery(column: String, values: Collection<Any?>): Query {
+  fun buildSingleCollectionQuery(column: String, values: Collection<Any?>, prefix: String = ""): Query {
     require(!values.isEmpty()) { "Must have values!" }
 
     val query = StringBuilder()
@@ -224,7 +220,7 @@ object SqlUtil {
       }
       i++
     }
-    return Query("$column IN ($query)", buildArgs(*args))
+    return Query("$prefix $column IN ($query)".trim(), buildArgs(*args))
   }
 
   @JvmStatic

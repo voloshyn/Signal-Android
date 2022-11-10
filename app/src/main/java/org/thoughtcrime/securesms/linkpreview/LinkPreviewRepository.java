@@ -182,9 +182,9 @@ public class LinkPreviewRepository {
     CallRequestController controller = new CallRequestController(call);
 
     SignalExecutors.UNBOUNDED.execute(() -> {
-      try {
-        Response response = call.execute();
+      try (Response response = call.execute()) {
         if (!response.isSuccessful() || response.body() == null) {
+          callback.accept(Optional.empty());
           return;
         }
 

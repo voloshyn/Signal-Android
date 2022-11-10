@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.view.KeyEvent
+import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.viewModels
@@ -13,7 +14,7 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintSet
 import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentManager
+import androidx.core.view.updateLayoutParams
 import androidx.lifecycle.ViewModelProvider
 import androidx.navigation.Navigation
 import androidx.navigation.fragment.NavHostFragment
@@ -25,23 +26,22 @@ import org.signal.core.util.logging.Log
 import org.thoughtcrime.securesms.PassphraseRequiredActivity
 import org.thoughtcrime.securesms.R
 import org.thoughtcrime.securesms.components.emoji.EmojiEventListener
-import org.thoughtcrime.securesms.contacts.paged.ContactSearchConfiguration
 import org.thoughtcrime.securesms.contacts.paged.ContactSearchKey
-import org.thoughtcrime.securesms.contacts.paged.ContactSearchState
 import org.thoughtcrime.securesms.conversation.MessageSendType
-import org.thoughtcrime.securesms.conversation.mutiselect.forward.MultiselectForwardFullScreenDialogFragment
-import org.thoughtcrime.securesms.conversation.mutiselect.forward.SearchConfigurationProvider
-import org.thoughtcrime.securesms.conversation.ui.error.SafetyNumberChangeDialog
 import org.thoughtcrime.securesms.keyboard.emoji.EmojiKeyboardPageFragment
 import org.thoughtcrime.securesms.keyboard.emoji.search.EmojiSearchFragment
 import org.thoughtcrime.securesms.linkpreview.LinkPreviewUtil
+import org.thoughtcrime.securesms.mediasend.CameraDisplay
 import org.thoughtcrime.securesms.mediasend.Media
 import org.thoughtcrime.securesms.mediasend.MediaSendActivityResult
 import org.thoughtcrime.securesms.mediasend.v2.review.MediaReviewFragment
 import org.thoughtcrime.securesms.mediasend.v2.text.TextStoryPostCreationViewModel
 import org.thoughtcrime.securesms.mediasend.v2.text.send.TextStoryPostSendRepository
 import org.thoughtcrime.securesms.recipients.RecipientId
+import org.thoughtcrime.securesms.safety.SafetyNumberBottomSheet
 import org.thoughtcrime.securesms.stories.Stories
+import org.thoughtcrime.securesms.util.FullscreenHelper
+import org.thoughtcrime.securesms.util.WindowUtil
 import org.thoughtcrime.securesms.util.navigation.safeNavigate
 import org.thoughtcrime.securesms.util.visible
 
@@ -50,9 +50,7 @@ class MediaSelectionActivity :
   MediaReviewFragment.Callback,
   EmojiKeyboardPageFragment.Callback,
   EmojiEventListener,
-  EmojiSearchFragment.Callback,
-  SearchConfigurationProvider,
-  MultiselectForwardFullScreenDialogFragment.Callback {
+  EmojiSearchFragment.Callback {
 
   private var animateInShadowLayerValueAnimator: ValueAnimator? = null
   private var animateInTextColorValueAnimator: ValueAnimator? = null
@@ -87,6 +85,10 @@ class MediaSelectionActivity :
   override fun onCreate(savedInstanceState: Bundle?, ready: Boolean) {
     setContentView(R.layout.media_selection_activity)
 
+    FullscreenHelper.showSystemUI(window)
+    WindowUtil.setNavigationBarColor(this, 0x01000000)
+    WindowUtil.setStatusBarColor(window, Color.TRANSPARENT)
+
     val sendType: MessageSendType = requireNotNull(intent.getParcelableExtra(MESSAGE_SEND_TYPE))
     val initialMedia: List<Media> = intent.getParcelableArrayListExtra(MEDIA) ?: listOf()
     val message: CharSequence? = if (shareToTextStory) null else draftText
@@ -96,6 +98,12 @@ class MediaSelectionActivity :
     viewModel = ViewModelProvider(this, factory)[MediaSelectionViewModel::class.java]
 
     val textStoryToggle: ConstraintLayout = findViewById(R.id.switch_widget)
+    val cameraDisplay = CameraDisplay.getDisplay(this)
+
+    textStoryToggle.updateLayoutParams<FrameLayout.LayoutParams> {
+      bottomMargin = cameraDisplay.getToggleBottomMargin()
+    }
+
     val cameraSelectedConstraintSet = ConstraintSet().apply {
       clone(textStoryToggle)
     }
@@ -245,7 +253,9 @@ class MediaSelectionActivity :
   override fun onSendError(error: Throwable) {
     if (error is UntrustedRecords.UntrustedRecordsException) {
       Log.w(TAG, "Send failed due to untrusted identities.")
-      SafetyNumberChangeDialog.show(supportFragmentManager, error.untrustedRecords)
+      SafetyNumberBottomSheet
+        .forIdentityRecordsAndDestinations(error.untrustedRecords, error.destinations.toList())
+        .show(supportFragmentManager)
     } else {
       setResult(RESULT_CANCELED)
 
@@ -309,28 +319,6 @@ class MediaSelectionActivity :
 
   override fun closeEmojiSearch() {
     viewModel.sendCommand(HudCommand.CloseEmojiSearch)
-  }
-
-  override fun getSearchConfiguration(fragmentManager: FragmentManager, contactSearchState: ContactSearchState): ContactSearchConfiguration? {
-    return if (isStory) {
-      ContactSearchConfiguration.build {
-        query = contactSearchState.query
-
-        addSection(
-          ContactSearchConfiguration.Section.Stories(
-            groupStories = contactSearchState.groupStories,
-            includeHeader = true,
-            headerAction = Stories.getHeaderAction(fragmentManager)
-          )
-        )
-      }
-    } else {
-      null
-    }
-  }
-
-  override fun getStorySendRequirements(): Stories.MediaTransform.SendRequirements {
-    return viewModel.getStorySendRequirements()
   }
 
   private inner class OnBackPressed : OnBackPressedCallback(true) {
@@ -429,6 +417,17 @@ class MediaSelectionActivity :
     }
 
     @JvmStatic
+    fun editor(
+      context: Context,
+      media: List<Media>,
+    ): Intent {
+      return buildIntent(
+        context = context,
+        media = media
+      )
+    }
+
+    @JvmStatic
     fun share(
       context: Context,
       messageSendType: MessageSendType,
@@ -444,7 +443,8 @@ class MediaSelectionActivity :
         destination = MediaSelectionDestination.MultipleRecipients(recipientSearchKeys),
         message = message,
         asTextStory = asTextStory,
-        startAction = if (asTextStory) R.id.action_directly_to_textPostCreationFragment else -1
+        startAction = if (asTextStory) R.id.action_directly_to_textPostCreationFragment else -1,
+        isStory = recipientSearchKeys.any { it.isStory }
       )
     }
 

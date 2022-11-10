@@ -1,5 +1,6 @@
 package org.thoughtcrime.securesms.database;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.database.Cursor;
 
@@ -12,10 +13,11 @@ import org.thoughtcrime.securesms.util.MediaUtil;
 
 import java.util.List;
 
+@SuppressLint({"RecipientIdDatabaseReferenceUsage", "ThreadIdDatabaseReferenceUsage"}) // Not a real table, just a view
 public class MediaDatabase extends Database {
 
-    public  static final int    ALL_THREADS         = -1;
-    private static final String THREAD_RECIPIENT_ID = "THREAD_RECIPIENT_ID";
+  public  static final int    ALL_THREADS         = -1;
+  private static final String THREAD_RECIPIENT_ID = "THREAD_RECIPIENT_ID";
 
     private static final String BASE_MEDIA_QUERY = "SELECT " + AttachmentDatabase.TABLE_NAME + "." + AttachmentDatabase.ROW_ID + " AS " + AttachmentDatabase.ROW_ID + ", "
                                                    + AttachmentDatabase.TABLE_NAME + "." + AttachmentDatabase.CONTENT_TYPE + ", "
@@ -61,6 +63,7 @@ public class MediaDatabase extends Database {
                                                    + " FROM " + MmsDatabase.TABLE_NAME
                                                    + " WHERE " + MmsDatabase.THREAD_ID + " __EQUALITY__ ?) AND (%s) AND "
                                                    + MmsDatabase.VIEW_ONCE + " = 0 AND "
+                                                   + MmsDatabase.STORY_TYPE + " = 0 AND "
                                                    + AttachmentDatabase.DATA + " IS NOT NULL AND "
                                                    + "(" + AttachmentDatabase.QUOTE + " = 0 OR (" + AttachmentDatabase.QUOTE + " = 1 AND " + AttachmentDatabase.DATA_HASH + " IS NULL)) AND "
                                                    + AttachmentDatabase.STICKER_PACK_ID + " IS NULL AND "
@@ -71,7 +74,7 @@ public class MediaDatabase extends Database {
         + "MAX(" + AttachmentDatabase.SIZE + ") as " + AttachmentDatabase.SIZE + ", "
         + AttachmentDatabase.CONTENT_TYPE + " "
         + "FROM " + AttachmentDatabase.TABLE_NAME + " "
-        + "WHERE " + AttachmentDatabase.STICKER_PACK_ID + " IS NULL "
+        + "WHERE " + AttachmentDatabase.STICKER_PACK_ID + " IS NULL AND " + AttachmentDatabase.TRANSFER_STATE + " = " + AttachmentDatabase.TRANSFER_PROGRESS_DONE + " "
         + "GROUP BY " + AttachmentDatabase.DATA;
 
   private static final String GALLERY_MEDIA_QUERY  = String.format(BASE_MEDIA_QUERY, AttachmentDatabase.CONTENT_TYPE + " NOT LIKE 'image/svg%' AND (" +
@@ -90,10 +93,6 @@ public class MediaDatabase extends Database {
   }
 
   public @NonNull Cursor getGalleryMediaForThread(long threadId, @NonNull Sorting sorting) {
-    return getGalleryMediaForThread(threadId, sorting, false);
-  }
-
-  public @NonNull Cursor getGalleryMediaForThread(long threadId, @NonNull Sorting sorting, boolean listenToAllThreads) {
     SQLiteDatabase database = databaseHelper.getSignalReadableDatabase();
     String         query    = sorting.applyToQuery(applyEqualityOperator(threadId, GALLERY_MEDIA_QUERY));
     String[]       args     = {threadId + ""};
@@ -190,7 +189,7 @@ public class MediaDatabase extends Database {
       this.outgoing          = outgoing;
     }
 
-    public static MediaRecord from(@NonNull Context context, @NonNull Cursor cursor) {
+    public static MediaRecord from(@NonNull Cursor cursor) {
       AttachmentDatabase       attachmentDatabase = SignalDatabase.attachments();
       List<DatabaseAttachment> attachments        = attachmentDatabase.getAttachments(cursor);
       RecipientId              recipientId        = RecipientId.from(cursor.getLong(cursor.getColumnIndexOrThrow(MmsDatabase.RECIPIENT_ID)));
@@ -261,6 +260,19 @@ public class MediaDatabase extends Database {
 
     public boolean isRelatedToFileSize() {
       return this == Largest;
+    }
+
+    public static @NonNull Sorting deserialize(int code) {
+      switch (code) {
+        case 0:
+          return Newest;
+        case 1:
+          return Oldest;
+        case 2:
+          return Largest;
+        default:
+          throw new IllegalArgumentException("Unknown code: " + code);
+      }
     }
   }
 

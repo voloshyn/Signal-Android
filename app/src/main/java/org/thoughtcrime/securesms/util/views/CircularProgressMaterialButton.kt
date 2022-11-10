@@ -9,11 +9,14 @@ import android.util.AttributeSet
 import android.view.ViewAnimationUtils
 import android.widget.FrameLayout
 import androidx.annotation.StringRes
+import androidx.annotation.VisibleForTesting
 import androidx.core.animation.doOnEnd
 import androidx.core.content.withStyledAttributes
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.progressindicator.CircularProgressIndicator
 import com.google.android.material.theme.overlay.MaterialThemeOverlay
 import org.thoughtcrime.securesms.R
+import org.thoughtcrime.securesms.util.visible
 import kotlin.math.max
 
 /**
@@ -33,6 +36,7 @@ class CircularProgressMaterialButton @JvmOverloads constructor(
   private var animator: Animator? = null
 
   private val materialButton: MaterialButton = findViewById(R.id.button)
+  private val progressIndicator: CircularProgressIndicator = findViewById(R.id.progress_indicator)
 
   var text: CharSequence?
     get() = materialButton.text
@@ -50,6 +54,18 @@ class CircularProgressMaterialButton @JvmOverloads constructor(
 
   fun setText(@StringRes resId: Int) {
     materialButton.setText(resId)
+  }
+
+  override fun setEnabled(enabled: Boolean) {
+    super.setEnabled(enabled)
+    materialButton.isEnabled = enabled
+    progressIndicator.visible = enabled
+  }
+
+  override fun setClickable(clickable: Boolean) {
+    super.setClickable(clickable)
+    materialButton.isClickable = clickable
+    progressIndicator.visible = clickable
   }
 
   override fun onSaveInstanceState(): Parcelable {
@@ -71,6 +87,11 @@ class CircularProgressMaterialButton @JvmOverloads constructor(
 
   override fun setOnClickListener(onClickListener: OnClickListener?) {
     materialButton.setOnClickListener(onClickListener)
+  }
+
+  @VisibleForTesting
+  fun getRequestedState(): State {
+    return requestedState
   }
 
   fun setSpinning() {

@@ -13,6 +13,7 @@ import org.thoughtcrime.securesms.jobmanager.Job;
 import org.thoughtcrime.securesms.jobmanager.impl.NetworkConstraint;
 import org.thoughtcrime.securesms.keyvalue.KbsValues;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
+import org.thoughtcrime.securesms.registration.RegistrationRepository;
 import org.thoughtcrime.securesms.registration.secondary.DeviceNameCipher;
 import org.thoughtcrime.securesms.util.TextSecurePreferences;
 import org.whispersystems.signalservice.api.SignalServiceAccountManager;
@@ -22,6 +23,7 @@ import org.whispersystems.signalservice.api.push.exceptions.NetworkFailureExcept
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 
 public class RefreshAttributesJob extends BaseJob {
 
@@ -48,6 +50,8 @@ public class RefreshAttributesJob extends BaseJob {
                            .addConstraint(NetworkConstraint.KEY)
                            .setQueue("RefreshAttributesJob")
                            .setMaxInstancesForFactory(2)
+                           .setLifespan(TimeUnit.DAYS.toMillis(30))
+                           .setMaxAttempts(Parameters.UNLIMITED)
                            .build(),
          forced);
   }
@@ -80,12 +84,13 @@ public class RefreshAttributesJob extends BaseJob {
     }
 
     int       registrationId              = SignalStore.account().getRegistrationId();
-    boolean   fetchesMessages             = !SignalStore.account().isFcmEnabled();
+    boolean   fetchesMessages             = !SignalStore.account().isFcmEnabled() || SignalStore.internalValues().isWebsocketModeForced();
     byte[]    unidentifiedAccessKey       = UnidentifiedAccess.deriveAccessKeyFrom(ProfileKeyUtil.getSelfProfileKey());
     boolean   universalUnidentifiedAccess = TextSecurePreferences.isUniversalUnidentifiedAccess(context);
     String    registrationLockV1          = null;
     String    registrationLockV2          = null;
     KbsValues kbsValues                   = SignalStore.kbsValues();
+    int       pniRegistrationId           = new RegistrationRepository(ApplicationDependencies.getApplication()).getPniRegistrationId();
 
     if (kbsValues.isV2RegistrationLockEnabled()) {
       registrationLockV2 = kbsValues.getRegistrationLockToken();
@@ -112,15 +117,21 @@ public class RefreshAttributesJob extends BaseJob {
                "\n    Change Number? " + capabilities.isChangeNumber() +
                "\n    Stories? " + capabilities.isStories() +
                "\n    Gift Badges? " + capabilities.isGiftBadges() +
+               "\n    PNP? " + capabilities.isPnp() +
                "\n    UUID? " + capabilities.isUuid());
 
     SignalServiceAccountManager signalAccountManager = ApplicationDependencies.getSignalServiceAccountManager();
-    signalAccountManager.setAccountAttributes(null, registrationId, fetchesMessages,
-                                              registrationLockV1, registrationLockV2,
-                                              unidentifiedAccessKey, universalUnidentifiedAccess,
+    signalAccountManager.setAccountAttributes(null,
+                                              registrationId,
+                                              fetchesMessages,
+                                              registrationLockV1,
+                                              registrationLockV2,
+                                              unidentifiedAccessKey,
+                                              universalUnidentifiedAccess,
                                               capabilities,
                                               phoneNumberDiscoverable,
-                                              encryptedDeviceName);
+                                              encryptedDeviceName,
+                                              pniRegistrationId);
 
     hasRefreshedThisAppCycle = true;
   }

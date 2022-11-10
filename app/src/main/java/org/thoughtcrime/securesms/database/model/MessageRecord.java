@@ -32,6 +32,7 @@ import androidx.core.content.ContextCompat;
 
 import com.annimon.stream.Stream;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.signal.core.util.StringUtil;
 import org.signal.core.util.logging.Log;
@@ -48,10 +49,12 @@ import org.thoughtcrime.securesms.database.model.databaseprotos.BodyRangeList;
 import org.thoughtcrime.securesms.database.model.databaseprotos.DecryptedGroupV2Context;
 import org.thoughtcrime.securesms.database.model.databaseprotos.GroupCallUpdateDetails;
 import org.thoughtcrime.securesms.database.model.databaseprotos.ProfileChangeDetails;
+import org.thoughtcrime.securesms.database.model.databaseprotos.ThreadMergeEvent;
 import org.thoughtcrime.securesms.emoji.EmojiSource;
 import org.thoughtcrime.securesms.emoji.JumboEmoji;
 import org.thoughtcrime.securesms.groups.GroupMigrationMembershipChange;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
+import org.thoughtcrime.securesms.phonenumbers.PhoneNumberFormatter;
 import org.thoughtcrime.securesms.profiles.ProfileName;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientId;
@@ -211,9 +214,7 @@ public abstract class MessageRecord extends DisplayRecord {
     } else if (isChangeNumber()) {
       return fromRecipient(getIndividualRecipient(), r -> context.getString(R.string.MessageRecord_s_changed_their_phone_number, r.getDisplayName(context)), R.drawable.ic_phone_16);
     } else if (isBoostRequest()) {
-      int message = SignalStore.donationsValues().isLikelyASustainer() ? R.string.MessageRecord_like_this_new_feature_say_thanks_with_a_boost
-                                                                       : R.string.MessageRecord_signal_is_powered_by_people_like_you_become_a_sustainer_today;
-      return staticUpdateDescription(context.getString(message), 0);
+      return staticUpdateDescription(context.getString(R.string.MessageRecord_like_this_new_feature_help_support_signal_with_a_one_time_donation), 0);
     } else if (isEndSession()) {
       if (isOutgoing()) return staticUpdateDescription(context.getString(R.string.SmsMessageRecord_secure_session_reset), R.drawable.ic_update_info_16);
       else              return fromRecipient(getIndividualRecipient(), r-> context.getString(R.string.SmsMessageRecord_secure_session_reset_s, r.getDisplayName(context)), R.drawable.ic_update_info_16);
@@ -223,6 +224,28 @@ public abstract class MessageRecord extends DisplayRecord {
       return staticUpdateDescription(context.getString(R.string.MessageRecord_chat_session_refreshed), R.drawable.ic_refresh_16);
     } else if (isBadDecryptType()) {
       return fromRecipient(getIndividualRecipient(), r -> context.getString(R.string.MessageRecord_a_message_from_s_couldnt_be_delivered, r.getDisplayName(context)), R.drawable.ic_error_outline_14);
+    } else if (isThreadMergeEventType()) {
+      try {
+        ThreadMergeEvent event = ThreadMergeEvent.parseFrom(Base64.decodeOrThrow(getBody()));
+
+        if (event.getPreviousE164().isEmpty()) {
+          return fromRecipient(getIndividualRecipient(), r -> context.getString(R.string.MessageRecord_your_message_history_with_s_and_another_chat_has_been_merged, r.getDisplayName(context)), R.drawable.ic_thread_merge_16);
+        } else {
+          return fromRecipient(getIndividualRecipient(), r -> context.getString(R.string.MessageRecord_your_message_history_with_s_and_their_number_s_has_been_merged, r.getDisplayName(context), PhoneNumberFormatter.prettyPrint(event.getPreviousE164())), R.drawable.ic_thread_merge_16);
+        }
+      } catch (InvalidProtocolBufferException e) {
+        throw new AssertionError(e);
+      }
+    } else if (isSmsExportType()) {
+      int messageResource = SignalStore.misc().getSmsExportPhase().isSmsSupported() ? R.string.MessageRecord__you_will_no_longer_be_able_to_send_sms_messages_from_signal_soon
+                                                                                    : R.string.MessageRecord__you_can_no_longer_send_sms_messages_in_signal;
+      return fromRecipient(getIndividualRecipient(), r -> context.getString(messageResource, r.getDisplayName(context)), R.drawable.ic_update_info_16);
+    } else if (isRequestToActivatePayments()) {
+      return isOutgoing() ? fromRecipient(getIndividualRecipient(), r -> context.getString(R.string.MessageRecord_you_sent_request, r.getShortDisplayName(context)), R.drawable.ic_card_activate_payments)
+                          : fromRecipient(getIndividualRecipient(), r -> context.getString(R.string.MessageRecord_wants_you_to_activate_payments, r.getShortDisplayName(context)), R.drawable.ic_card_activate_payments);
+   } else if (isPaymentsActivated()) {
+      return isOutgoing() ? staticUpdateDescription(context.getString(R.string.MessageRecord_you_activated_payments), R.drawable.ic_card_activate_payments)
+                          : fromRecipient(getIndividualRecipient(), r -> context.getString(R.string.MessageRecord_can_accept_payments, r.getShortDisplayName(context)), R.drawable.ic_card_activate_payments);
     }
 
     return null;
@@ -525,6 +548,14 @@ public abstract class MessageRecord extends DisplayRecord {
     return MmsSmsColumns.Types.isBadDecryptType(type);
   }
 
+  public boolean isThreadMergeEventType() {
+    return MmsSmsColumns.Types.isThreadMergeType(type);
+  }
+
+  public boolean isSmsExportType() {
+    return MmsSmsColumns.Types.isSmsExport(type);
+  }
+
   public boolean isInvalidVersionKeyExchange() {
     return SmsDatabase.Types.isInvalidVersionKeyExchange(type);
   }
@@ -545,7 +576,8 @@ public abstract class MessageRecord extends DisplayRecord {
     return isGroupAction() || isJoined() || isExpirationTimerUpdate() || isCallLog() ||
            isEndSession() || isIdentityUpdate() || isIdentityVerified() || isIdentityDefault() ||
            isProfileChange() || isGroupV1MigrationEvent() || isChatSessionRefresh() || isBadDecryptType() ||
-           isChangeNumber() || isBoostRequest();
+           isChangeNumber() || isBoostRequest() || isThreadMergeEventType() || isSmsExportType() ||
+           isRequestToActivatePayments() || isPaymentsActivated();
   }
 
   public boolean isMediaPending() {

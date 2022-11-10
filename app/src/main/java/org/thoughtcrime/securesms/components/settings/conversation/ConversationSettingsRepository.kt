@@ -62,7 +62,7 @@ class ConversationSettingsRepository(
 
   fun getThreadId(groupId: GroupId, consumer: (Long) -> Unit) {
     SignalExecutors.BOUNDED.execute {
-      val recipientId = Recipient.externalGroupExact(context, groupId).id
+      val recipientId = Recipient.externalGroupExact(groupId).id
       consumer(SignalDatabase.threads.getThreadIdIfExistsFor(recipientId))
     }
   }
@@ -156,7 +156,7 @@ class ConversationSettingsRepository(
 
   fun setMuteUntil(groupId: GroupId, until: Long) {
     SignalExecutors.BOUNDED.execute {
-      val recipientId = Recipient.externalGroupExact(context, groupId).id
+      val recipientId = Recipient.externalGroupExact(groupId).id
       SignalDatabase.recipients.setMuted(recipientId, until)
     }
   }
@@ -175,21 +175,21 @@ class ConversationSettingsRepository(
   fun unblock(recipientId: RecipientId) {
     SignalExecutors.BOUNDED.execute {
       val recipient = Recipient.resolved(recipientId)
-      RecipientUtil.unblock(context, recipient)
+      RecipientUtil.unblock(recipient)
     }
   }
 
   fun block(groupId: GroupId) {
     SignalExecutors.BOUNDED.execute {
-      val recipient = Recipient.externalGroupExact(context, groupId)
+      val recipient = Recipient.externalGroupExact(groupId)
       RecipientUtil.block(context, recipient)
     }
   }
 
   fun unblock(groupId: GroupId) {
     SignalExecutors.BOUNDED.execute {
-      val recipient = Recipient.externalGroupExact(context, groupId)
-      RecipientUtil.unblock(context, recipient)
+      val recipient = Recipient.externalGroupExact(groupId)
+      RecipientUtil.unblock(recipient)
     }
   }
 
@@ -204,7 +204,7 @@ class ConversationSettingsRepository(
 
   fun getExternalPossiblyMigratedGroupRecipientId(groupId: GroupId, consumer: (RecipientId) -> Unit) {
     SignalExecutors.BOUNDED.execute {
-      consumer(Recipient.externalPossiblyMigratedGroup(context, groupId).id)
+      consumer(Recipient.externalPossiblyMigratedGroup(groupId).id)
     }
   }
 }

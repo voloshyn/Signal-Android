@@ -16,6 +16,7 @@
  */
 package org.thoughtcrime.securesms.database;
 
+import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
 
@@ -24,21 +25,24 @@ import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import com.annimon.stream.Stream;
+import com.google.protobuf.InvalidProtocolBufferException;
 
 import net.zetetic.database.sqlcipher.SQLiteQueryBuilder;
 
+import org.signal.core.util.CursorUtil;
+import org.signal.core.util.SqlUtil;
 import org.signal.core.util.logging.Log;
 import org.signal.libsignal.protocol.util.Pair;
 import org.thoughtcrime.securesms.database.MessageDatabase.MessageUpdate;
 import org.thoughtcrime.securesms.database.MessageDatabase.SyncMessageId;
+import org.thoughtcrime.securesms.database.model.MessageExportStatus;
 import org.thoughtcrime.securesms.database.model.MessageId;
 import org.thoughtcrime.securesms.database.model.MessageRecord;
+import org.thoughtcrime.securesms.database.model.databaseprotos.MessageExportState;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
-import org.thoughtcrime.securesms.notifications.v2.MessageNotifierV2;
+import org.thoughtcrime.securesms.notifications.v2.DefaultMessageNotifier;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientId;
-import org.signal.core.util.CursorUtil;
-import org.signal.core.util.SqlUtil;
 import org.whispersystems.signalservice.api.messages.multidevice.ReadMessage;
 
 import java.io.Closeable;
@@ -50,6 +54,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static org.thoughtcrime.securesms.database.MmsSmsColumns.Types.GROUP_V2_LEAVE_BITS;
@@ -117,7 +122,7 @@ public class MmsSmsDatabase extends Database {
                                               MmsDatabase.PARENT_STORY_ID};
 
   private static final String SNIPPET_QUERY = "SELECT " + MmsSmsColumns.ID + ", 0 AS " + TRANSPORT + ", " + SmsDatabase.TYPE + " AS " + MmsSmsColumns.NORMALIZED_TYPE + ", " + SmsDatabase.DATE_RECEIVED + " AS " + MmsSmsColumns.NORMALIZED_DATE_RECEIVED + " FROM " + SmsDatabase.TABLE_NAME + " " +
-                                              "WHERE " + MmsSmsColumns.THREAD_ID + " = ? AND " + SmsDatabase.TYPE + " NOT IN (" + SmsDatabase.Types.PROFILE_CHANGE_TYPE + ", " + SmsDatabase.Types.GV1_MIGRATION_TYPE + ", " + SmsDatabase.Types.CHANGE_NUMBER_TYPE + ", " + SmsDatabase.Types.BOOST_REQUEST_TYPE + ") AND " + SmsDatabase.TYPE + " & " + GROUP_V2_LEAVE_BITS + " != " + GROUP_V2_LEAVE_BITS + " " +
+                                              "WHERE " + MmsSmsColumns.THREAD_ID + " = ? AND " + SmsDatabase.TYPE + " NOT IN (" + SmsDatabase.Types.PROFILE_CHANGE_TYPE + ", " + SmsDatabase.Types.GV1_MIGRATION_TYPE + ", " + SmsDatabase.Types.CHANGE_NUMBER_TYPE + ", " + SmsDatabase.Types.BOOST_REQUEST_TYPE + ", " + SmsDatabase.Types.SMS_EXPORT_TYPE + ") AND " + SmsDatabase.TYPE + " & " + GROUP_V2_LEAVE_BITS + " != " + GROUP_V2_LEAVE_BITS + " " +
                                               "UNION ALL " +
                                               "SELECT " + MmsSmsColumns.ID + ", 1 AS " + TRANSPORT + ", " + MmsDatabase.MESSAGE_BOX + " AS " + MmsSmsColumns.NORMALIZED_TYPE + ", " + MmsDatabase.DATE_RECEIVED + " AS " + MmsSmsColumns.NORMALIZED_DATE_RECEIVED + " FROM " + MmsDatabase.TABLE_NAME + " " +
                                               "WHERE " + MmsSmsColumns.THREAD_ID + " = ? AND " + MmsDatabase.MESSAGE_BOX + " & " + GROUP_V2_LEAVE_BITS + " != " + GROUP_V2_LEAVE_BITS + " AND " + MmsDatabase.STORY_TYPE + " = 0 AND " + MmsDatabase.PARENT_STORY_ID + " <= 0 " +
@@ -251,9 +256,9 @@ public class MmsSmsDatabase extends Database {
     }
   }
 
-  public Cursor getMessagesForNotificationState(Collection<MessageNotifierV2.StickyThread> stickyThreads) {
+  public Cursor getMessagesForNotificationState(Collection<DefaultMessageNotifier.StickyThread> stickyThreads) {
     StringBuilder stickyQuery = new StringBuilder();
-    for (MessageNotifierV2.StickyThread stickyThread : stickyThreads) {
+    for (DefaultMessageNotifier.StickyThread stickyThread : stickyThreads) {
       if (stickyQuery.length() > 0) {
         stickyQuery.append(" OR ");
       }
@@ -275,17 +280,17 @@ public class MmsSmsDatabase extends Database {
   }
 
   /**
-   * The number of messages that quote the target message
+   * Whether or not the message has been quoted by another message.
    */
-  public int getQuotedCount(@NonNull MessageRecord messageRecord) {
+  public boolean isQuoted(@NonNull MessageRecord messageRecord) {
     RecipientId author    = messageRecord.isOutgoing() ? Recipient.self().getId() : messageRecord.getRecipient().getId();
     long        timestamp = messageRecord.getDateSent();
 
     String   where      = MmsDatabase.QUOTE_ID +  " = ?  AND " + MmsDatabase.QUOTE_AUTHOR + " = ?";
     String[] whereArgs  = SqlUtil.buildArgs(timestamp, author);
 
-    try (Cursor cursor = getReadableDatabase().query(MmsDatabase.TABLE_NAME, COUNT, where, whereArgs, null, null, null)) {
-      return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+    try (Cursor cursor = getReadableDatabase().query(MmsDatabase.TABLE_NAME, new String[]{ "1" }, where, whereArgs, null, null, null, "1")) {
+      return cursor.moveToFirst();
     }
   }
 
@@ -307,8 +312,19 @@ public class MmsSmsDatabase extends Database {
       MessageRecord record;
       while ((record = reader.getNext()) != null) {
         records.add(record);
+        records.addAll(getAllMessagesThatQuote(new MessageId(record.getId(), record.isMms())));
       }
     }
+
+    Collections.sort(records, (lhs, rhs) -> {
+      if (lhs.getDateReceived() > rhs.getDateReceived()) {
+        return -1;
+      } else if (lhs.getDateReceived() < rhs.getDateReceived()) {
+        return 1;
+      } else {
+        return 0;
+      }
+    });
 
     return records;
   }
@@ -386,6 +402,24 @@ public class MmsSmsDatabase extends Database {
     return count;
   }
 
+  public int getUnexportedInsecureMessagesCount() {
+    return getUnexportedInsecureMessagesCount(-1);
+  }
+
+  public int getUnexportedInsecureMessagesCount(long threadId) {
+    int count = SignalDatabase.sms().getUnexportedInsecureMessagesCount(threadId);
+    count    += SignalDatabase.mms().getUnexportedInsecureMessagesCount(threadId);
+
+    return count;
+  }
+
+  public int getIncomingMeaningfulMessageCountSince(long threadId, long afterTime) {
+    int count = SignalDatabase.sms().getIncomingMeaningfulMessageCountSince(threadId, afterTime);
+    count    += SignalDatabase.mms().getIncomingMeaningfulMessageCountSince(threadId, afterTime);
+
+    return count;
+  }
+
   public int getMessageCountBeforeDate(long date) {
     String selection = MmsSmsColumns.NORMALIZED_DATE_RECEIVED + " < " + date;
 
@@ -414,6 +448,18 @@ public class MmsSmsDatabase extends Database {
            SignalDatabase.mms().hasMeaningfulMessage(threadId);
   }
 
+  public long getThreadId(MessageId messageId) {
+    if (messageId.isMms()) {
+      return SignalDatabase.mms().getThreadIdForMessage(messageId.getId());
+    } else {
+      return SignalDatabase.sms().getThreadIdForMessage(messageId.getId());
+    }
+  }
+
+  /**
+   * This is currently only used in an old migration and shouldn't be used by anyone else, just because it flat-out isn't correct.
+   */
+  @Deprecated
   public long getThreadForMessageId(long messageId) {
     long id = SignalDatabase.sms().getThreadIdForMessage(messageId);
 
@@ -447,6 +493,10 @@ public class MmsSmsDatabase extends Database {
     return incrementReceiptCounts(syncMessageIds, timestamp, MessageDatabase.ReceiptType.VIEWED);
   }
 
+  public @NonNull Collection<SyncMessageId> incrementViewedNonStoryReceiptCounts(@NonNull List<SyncMessageId> syncMessageIds, long timestamp) {
+    return incrementReceiptCounts(syncMessageIds, timestamp, MessageDatabase.ReceiptType.VIEWED, MessageDatabase.MessageQualifier.NORMAL);
+  }
+
   public boolean incrementViewedReceiptCount(SyncMessageId syncMessageId, long timestamp) {
     return incrementReceiptCount(syncMessageId, timestamp, MessageDatabase.ReceiptType.VIEWED);
   }
@@ -459,7 +509,7 @@ public class MmsSmsDatabase extends Database {
     db.beginTransaction();
     try {
       for (SyncMessageId id : syncMessageIds) {
-        Set<MessageUpdate> updates = incrementStoryReceiptCountInternal(id, timestamp, MessageDatabase.ReceiptType.VIEWED);
+        Set<MessageUpdate> updates = incrementReceiptCountInternal(id, timestamp, MessageDatabase.ReceiptType.VIEWED, MessageDatabase.MessageQualifier.STORY);
 
         if (updates.size() > 0) {
           messageUpdates.addAll(updates);
@@ -491,13 +541,17 @@ public class MmsSmsDatabase extends Database {
    * @return Whether or not some thread was updated.
    */
   private boolean incrementReceiptCount(SyncMessageId syncMessageId, long timestamp, @NonNull MessageDatabase.ReceiptType receiptType) {
+    return incrementReceiptCount(syncMessageId, timestamp, receiptType, MessageDatabase.MessageQualifier.ALL);
+  }
+
+  private boolean incrementReceiptCount(SyncMessageId syncMessageId, long timestamp, @NonNull MessageDatabase.ReceiptType receiptType, @NonNull MessageDatabase.MessageQualifier messageQualifier) {
     SQLiteDatabase     db             = databaseHelper.getSignalWritableDatabase();
     ThreadDatabase     threadDatabase = SignalDatabase.threads();
     Set<MessageUpdate> messageUpdates = new HashSet<>();
 
     db.beginTransaction();
     try {
-      messageUpdates = incrementReceiptCountInternal(syncMessageId, timestamp, receiptType);
+      messageUpdates = incrementReceiptCountInternal(syncMessageId, timestamp, receiptType, messageQualifier);
 
       for (MessageUpdate messageUpdate : messageUpdates) {
         threadDatabase.update(messageUpdate.getThreadId(), false);
@@ -521,6 +575,10 @@ public class MmsSmsDatabase extends Database {
    * @return All of the messages that didn't result in updates.
    */
   private @NonNull Collection<SyncMessageId> incrementReceiptCounts(@NonNull List<SyncMessageId> syncMessageIds, long timestamp, @NonNull MessageDatabase.ReceiptType receiptType) {
+    return incrementReceiptCounts(syncMessageIds, timestamp, receiptType, MessageDatabase.MessageQualifier.ALL);
+  }
+
+  private @NonNull Collection<SyncMessageId> incrementReceiptCounts(@NonNull List<SyncMessageId> syncMessageIds, long timestamp, @NonNull MessageDatabase.ReceiptType receiptType, @NonNull MessageDatabase.MessageQualifier messageQualifier) {
     SQLiteDatabase            db             = databaseHelper.getSignalWritableDatabase();
     ThreadDatabase            threadDatabase = SignalDatabase.threads();
     Set<MessageUpdate>        messageUpdates = new HashSet<>();
@@ -529,7 +587,7 @@ public class MmsSmsDatabase extends Database {
     db.beginTransaction();
     try {
       for (SyncMessageId id : syncMessageIds) {
-        Set<MessageUpdate> updates = incrementReceiptCountInternal(id, timestamp, receiptType);
+        Set<MessageUpdate> updates = incrementReceiptCountInternal(id, timestamp, receiptType, messageQualifier);
 
         if (updates.size() > 0) {
           messageUpdates.addAll(updates);
@@ -563,30 +621,89 @@ public class MmsSmsDatabase extends Database {
   /**
    * Doesn't do any transactions or updates, so we can re-use the method safely.
    */
-  private @NonNull Set<MessageUpdate> incrementReceiptCountInternal(SyncMessageId syncMessageId, long timestamp, MessageDatabase.ReceiptType receiptType) {
+  private @NonNull Set<MessageUpdate> incrementReceiptCountInternal(SyncMessageId syncMessageId, long timestamp, MessageDatabase.ReceiptType receiptType, @NonNull MessageDatabase.MessageQualifier messageQualifier) {
     Set<MessageUpdate> messageUpdates = new HashSet<>();
 
-    messageUpdates.addAll(SignalDatabase.sms().incrementReceiptCount(syncMessageId, timestamp, receiptType, false));
-    messageUpdates.addAll(SignalDatabase.mms().incrementReceiptCount(syncMessageId, timestamp, receiptType, false));
+    messageUpdates.addAll(SignalDatabase.sms().incrementReceiptCount(syncMessageId, timestamp, receiptType, messageQualifier));
+    messageUpdates.addAll(SignalDatabase.mms().incrementReceiptCount(syncMessageId, timestamp, receiptType, messageQualifier));
 
     return messageUpdates;
-  }
-
-  /**
-   * Doesn't do any transactions or updates, so we can re-use the method safely.
-   */
-  private @NonNull Set<MessageUpdate> incrementStoryReceiptCountInternal(@NonNull SyncMessageId syncMessageId, long timestamp, @NonNull MessageDatabase.ReceiptType receiptType) {
-    return SignalDatabase.mms().incrementReceiptCount(syncMessageId, timestamp, receiptType, true);
   }
 
   public void updateViewedStories(@NonNull Set<SyncMessageId> syncMessageIds) {
     SignalDatabase.mms().updateViewedStories(syncMessageIds);
   }
 
+  private @NonNull MessageExportState getMessageExportState(@NonNull MessageId messageId) throws NoSuchMessageException {
+    String   table      = messageId.isMms() ? MmsDatabase.TABLE_NAME : SmsDatabase.TABLE_NAME;
+    String[] projection = SqlUtil.buildArgs(MmsSmsColumns.EXPORT_STATE);
+    String[] args       = SqlUtil.buildArgs(messageId.getId());
+
+    try (Cursor cursor = getReadableDatabase().query(table, projection, ID_WHERE, args, null, null, null, null)) {
+      if (cursor.moveToFirst()) {
+        byte[] bytes = CursorUtil.requireBlob(cursor,  MmsSmsColumns.EXPORT_STATE);
+        if (bytes == null) {
+          return MessageExportState.getDefaultInstance();
+        } else {
+          try {
+            return MessageExportState.parseFrom(bytes);
+          } catch (InvalidProtocolBufferException e) {
+            return MessageExportState.getDefaultInstance();
+          }
+        }
+      } else {
+        throw new NoSuchMessageException("The requested message does not exist.");
+      }
+    }
+  }
+
+  public void updateMessageExportState(@NonNull MessageId messageId, @NonNull Function<MessageExportState, MessageExportState> transform) throws NoSuchMessageException {
+    SQLiteDatabase database = getWritableDatabase();
+
+    database.beginTransaction();
+    try {
+      MessageExportState oldState = getMessageExportState(messageId);
+      MessageExportState newState = transform.apply(oldState);
+
+      setMessageExportState(messageId, newState);
+
+      database.setTransactionSuccessful();
+    } finally {
+      database.endTransaction();
+    }
+  }
+
+  public void markMessageExported(@NonNull MessageId messageId) {
+    String        table         = messageId.isMms() ? MmsDatabase.TABLE_NAME : SmsDatabase.TABLE_NAME;
+    ContentValues contentValues = new ContentValues(1);
+
+    contentValues.put(MmsSmsColumns.EXPORTED, MessageExportStatus.EXPORTED.getCode());
+
+    getWritableDatabase().update(table, contentValues, ID_WHERE, SqlUtil.buildArgs(messageId.getId()));
+  }
+
+  public void markMessageExportFailed(@NonNull MessageId messageId) {
+    String        table         = messageId.isMms() ? MmsDatabase.TABLE_NAME : SmsDatabase.TABLE_NAME;
+    ContentValues contentValues = new ContentValues(1);
+
+    contentValues.put(MmsSmsColumns.EXPORTED, MessageExportStatus.ERROR.getCode());
+
+    getWritableDatabase().update(table, contentValues, ID_WHERE, SqlUtil.buildArgs(messageId.getId()));
+  }
+
+  private void setMessageExportState(@NonNull MessageId messageId, @NonNull MessageExportState messageExportState) {
+    String        table         = messageId.isMms() ? MmsDatabase.TABLE_NAME : SmsDatabase.TABLE_NAME;
+    ContentValues contentValues = new ContentValues(1);
+
+    contentValues.put(MmsSmsColumns.EXPORT_STATE, messageExportState.toByteArray());
+
+    getWritableDatabase().update(table, contentValues, ID_WHERE, SqlUtil.buildArgs(messageId.getId()));
+  }
+
   /**
    * @return Unhandled ids
    */
-  public Collection<SyncMessageId> setTimestampRead(@NonNull Recipient senderRecipient, @NonNull List<ReadMessage> readMessages, long proposedExpireStarted, @NonNull Map<Long, Long> threadToLatestRead) {
+  public Collection<SyncMessageId> setTimestampReadFromSyncMessage(@NonNull List<ReadMessage> readMessages, long proposedExpireStarted, @NonNull Map<Long, Long> threadToLatestRead) {
     SQLiteDatabase db = getWritableDatabase();
 
     List<Pair<Long, Long>>    expiringText   = new LinkedList<>();
@@ -597,12 +714,13 @@ public class MmsSmsDatabase extends Database {
     db.beginTransaction();
     try {
       for (ReadMessage readMessage : readMessages) {
-        TimestampReadResult textResult  = SignalDatabase.sms().setTimestampRead(new SyncMessageId(senderRecipient.getId(), readMessage.getTimestamp()),
-                                                                                proposedExpireStarted,
-                                                                                threadToLatestRead);
-        TimestampReadResult mediaResult = SignalDatabase.mms().setTimestampRead(new SyncMessageId(senderRecipient.getId(), readMessage.getTimestamp()),
-                                                                                proposedExpireStarted,
-                                                                                threadToLatestRead);
+        RecipientId         authorId    = Recipient.externalPush(readMessage.getSender()).getId();
+        TimestampReadResult textResult  = SignalDatabase.sms().setTimestampReadFromSyncMessage(new SyncMessageId(authorId, readMessage.getTimestamp()),
+                                                                                               proposedExpireStarted,
+                                                                                               threadToLatestRead);
+        TimestampReadResult mediaResult = SignalDatabase.mms().setTimestampReadFromSyncMessage(new SyncMessageId(authorId, readMessage.getTimestamp()),
+                                                                                               proposedExpireStarted,
+                                                                                               threadToLatestRead);
 
         expiringText.addAll(textResult.expiring);
         expiringMedia.addAll(mediaResult.expiring);
@@ -611,7 +729,7 @@ public class MmsSmsDatabase extends Database {
         updatedThreads.addAll(mediaResult.threads);
 
         if (textResult.threads.isEmpty() && mediaResult.threads.isEmpty()) {
-          unhandled.add(new SyncMessageId(senderRecipient.getId(), readMessage.getTimestamp()));
+          unhandled.add(new SyncMessageId(authorId, readMessage.getTimestamp()));
         }
       }
 

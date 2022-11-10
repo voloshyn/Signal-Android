@@ -102,7 +102,7 @@ final class MessageRequestRepository {
       }
     } else if (recipient.isPushV1Group()) {
       if (RecipientUtil.isMessageRequestAccepted(context, threadId)) {
-        if (recipient.getParticipants().size() > FeatureFlags.groupLimits().getHardLimit()) {
+        if (recipient.getParticipantIds().size() > FeatureFlags.groupLimits().getHardLimit()) {
           return MessageRequestState.DEPRECATED_GROUP_V1_TOO_LARGE;
         } else {
           return MessageRequestState.DEPRECATED_GROUP_V1;
@@ -144,7 +144,7 @@ final class MessageRequestRepository {
         RecipientDatabase recipientDatabase = SignalDatabase.recipients();
         recipientDatabase.setProfileSharing(liveRecipient.getId(), true);
 
-        MessageSender.sendProfileKey(context, threadId);
+        MessageSender.sendProfileKey(threadId);
 
         List<MessageDatabase.MarkedMessageInfo> messageIds = SignalDatabase.threads().setEntireThreadRead(threadId);
         ApplicationDependencies.getMessageNotifier().updateNotification(context);
@@ -253,7 +253,7 @@ final class MessageRequestRepository {
     executor.execute(() -> {
       Recipient recipient = liveRecipient.resolve();
 
-      RecipientUtil.unblock(context, recipient);
+      RecipientUtil.unblock(recipient);
 
       if (TextSecurePreferences.isMultiDevice(context)) {
         ApplicationDependencies.getJobManager().add(MultiDeviceMessageRequestResponseJob.forAccept(liveRecipient.getId()));
@@ -277,6 +277,6 @@ final class MessageRequestRepository {
     Long    threadId = SignalDatabase.threads().getThreadIdFor(recipient.getId());
 
     return threadId != null &&
-        (RecipientUtil.hasSentMessageInThread(context, threadId) || RecipientUtil.isPreMessageRequestThread(context, threadId));
+        (RecipientUtil.hasSentMessageInThread(threadId) || RecipientUtil.isPreMessageRequestThread(threadId));
   }
 }

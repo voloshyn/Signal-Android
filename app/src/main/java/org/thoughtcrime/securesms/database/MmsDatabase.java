@@ -36,6 +36,7 @@ import net.zetetic.database.sqlcipher.SQLiteStatement;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.signal.core.util.CursorExtensionsKt;
 import org.signal.core.util.CursorUtil;
 import org.signal.core.util.SQLiteDatabaseExtensionsKt;
 import org.signal.core.util.SqlUtil;
@@ -52,6 +53,7 @@ import org.thoughtcrime.securesms.database.documents.NetworkFailure;
 import org.thoughtcrime.securesms.database.documents.NetworkFailureSet;
 import org.thoughtcrime.securesms.database.model.MediaMmsMessageRecord;
 import org.thoughtcrime.securesms.database.model.Mention;
+import org.thoughtcrime.securesms.database.model.MessageExportStatus;
 import org.thoughtcrime.securesms.database.model.MessageId;
 import org.thoughtcrime.securesms.database.model.MessageRecord;
 import org.thoughtcrime.securesms.database.model.NotificationMmsMessageRecord;
@@ -63,6 +65,8 @@ import org.thoughtcrime.securesms.database.model.StoryType;
 import org.thoughtcrime.securesms.database.model.StoryViewState;
 import org.thoughtcrime.securesms.database.model.databaseprotos.BodyRangeList;
 import org.thoughtcrime.securesms.database.model.databaseprotos.GiftBadge;
+import org.thoughtcrime.securesms.database.model.databaseprotos.MessageExportState;
+import org.thoughtcrime.securesms.database.model.databaseprotos.ThreadMergeEvent;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
 import org.thoughtcrime.securesms.groups.GroupMigrationMembershipChange;
 import org.thoughtcrime.securesms.jobs.TrimThreadJob;
@@ -74,6 +78,8 @@ import org.thoughtcrime.securesms.mms.MmsException;
 import org.thoughtcrime.securesms.mms.OutgoingExpirationUpdateMessage;
 import org.thoughtcrime.securesms.mms.OutgoingGroupUpdateMessage;
 import org.thoughtcrime.securesms.mms.OutgoingMediaMessage;
+import org.thoughtcrime.securesms.mms.OutgoingPaymentsActivatedMessages;
+import org.thoughtcrime.securesms.mms.OutgoingRequestToActivatePaymentMessages;
 import org.thoughtcrime.securesms.mms.OutgoingSecureMediaMessage;
 import org.thoughtcrime.securesms.mms.QuoteModel;
 import org.thoughtcrime.securesms.mms.SlideDeck;
@@ -98,9 +104,11 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -187,7 +195,9 @@ public class MmsDatabase extends MessageDatabase {
                                                                                   RECEIPT_TIMESTAMP      + " INTEGER DEFAULT -1, " +
                                                                                   MESSAGE_RANGES         + " BLOB DEFAULT NULL, " +
                                                                                   STORY_TYPE             + " INTEGER DEFAULT 0, " +
-                                                                                  PARENT_STORY_ID        + " INTEGER DEFAULT 0);";
+                                                                                  PARENT_STORY_ID        + " INTEGER DEFAULT 0, " +
+                                                                                  EXPORT_STATE           + " BLOB DEFAULT NULL, " +
+                                                                                  EXPORTED               + " INTEGER DEFAULT 0);";
 
   public static final String[] CREATE_INDEXS = {
     "CREATE INDEX IF NOT EXISTS mms_read_and_notified_and_thread_id_index ON " + TABLE_NAME + "(" + READ + "," + NOTIFIED + "," + THREAD_ID + ");",
@@ -199,7 +209,8 @@ public class MmsDatabase extends MessageDatabase {
     "CREATE INDEX IF NOT EXISTS mms_is_story_index ON " + TABLE_NAME + " (" + STORY_TYPE + ");",
     "CREATE INDEX IF NOT EXISTS mms_parent_story_id_index ON " + TABLE_NAME + " (" + PARENT_STORY_ID + ");",
     "CREATE INDEX IF NOT EXISTS mms_thread_story_parent_story_index ON " + TABLE_NAME + " (" + THREAD_ID + ", " + DATE_RECEIVED + "," + STORY_TYPE + "," + PARENT_STORY_ID + ");",
-    "CREATE INDEX IF NOT EXISTS mms_quote_id_quote_author_index ON " + TABLE_NAME + "(" + QUOTE_ID + ", " + QUOTE_AUTHOR + ");"
+    "CREATE INDEX IF NOT EXISTS mms_quote_id_quote_author_index ON " + TABLE_NAME + "(" + QUOTE_ID + ", " + QUOTE_AUTHOR + ");",
+    "CREATE INDEX IF NOT EXISTS mms_exported_index ON " + TABLE_NAME + " (" + EXPORTED + ");"
   };
 
   private static final String[] MMS_PROJECTION = new String[] {
@@ -370,7 +381,7 @@ public class MmsDatabase extends MessageDatabase {
   @Override
   public @NonNull List<MarkedMessageInfo> getViewedIncomingMessages(long threadId) {
     SQLiteDatabase db      = databaseHelper.getSignalReadableDatabase();
-    String[]       columns = new String[]{ID, RECIPIENT_ID, DATE_SENT, MESSAGE_BOX, THREAD_ID};
+    String[]       columns = new String[]{ID, RECIPIENT_ID, DATE_SENT, MESSAGE_BOX, THREAD_ID, STORY_TYPE};
     String         where   = THREAD_ID + " = ? AND " + VIEWED_RECEIPT_COUNT + " > 0 AND " + MESSAGE_BOX + " & " + Types.BASE_INBOX_TYPE + " = " + Types.BASE_INBOX_TYPE;
     String[]       args    = SqlUtil.buildArgs(threadId);
 
@@ -386,6 +397,7 @@ public class MmsDatabase extends MessageDatabase {
         RecipientId    recipientId   = RecipientId.from(CursorUtil.requireLong(cursor, RECIPIENT_ID));
         long           dateSent      = CursorUtil.requireLong(cursor, DATE_SENT);
         SyncMessageId  syncMessageId = new SyncMessageId(recipientId, dateSent);
+        StoryType      storyType     = StoryType.fromCode(CursorUtil.requireInt(cursor, STORY_TYPE));
 
         results.add(new MarkedMessageInfo(threadId, syncMessageId, new MessageId(messageId, true), null));
       }
@@ -412,7 +424,7 @@ public class MmsDatabase extends MessageDatabase {
     }
 
     SQLiteDatabase          database    = databaseHelper.getSignalWritableDatabase();
-    String[]                columns     = new String[]{ID, RECIPIENT_ID, DATE_SENT, MESSAGE_BOX, THREAD_ID};
+    String[]                columns     = new String[]{ID, RECIPIENT_ID, DATE_SENT, MESSAGE_BOX, THREAD_ID, STORY_TYPE};
     String                  where       = ID + " IN (" + Util.join(messageIds, ",") + ") AND " + VIEWED_RECEIPT_COUNT + " = 0";
     List<MarkedMessageInfo> results     = new LinkedList<>();
 
@@ -426,6 +438,7 @@ public class MmsDatabase extends MessageDatabase {
           RecipientId   recipientId   = RecipientId.from(CursorUtil.requireLong(cursor, RECIPIENT_ID));
           long          dateSent      = CursorUtil.requireLong(cursor, DATE_SENT);
           SyncMessageId syncMessageId = new SyncMessageId(recipientId, dateSent);
+          StoryType      storyType    = StoryType.fromCode(CursorUtil.requireInt(cursor, STORY_TYPE));
 
           results.add(new MarkedMessageInfo(threadId, syncMessageId, new MessageId(messageId, true), null));
 
@@ -454,7 +467,7 @@ public class MmsDatabase extends MessageDatabase {
   @Override
   public @NonNull List<MarkedMessageInfo>
   setOutgoingGiftsRevealed(@NonNull List<Long> messageIds) {
-    String[]                projection = SqlUtil.buildArgs(ID, RECIPIENT_ID, DATE_SENT, THREAD_ID);
+    String[]                projection = SqlUtil.buildArgs(ID, RECIPIENT_ID, DATE_SENT, THREAD_ID, STORY_TYPE);
     String                  where      = ID + " IN (" + Util.join(messageIds, ",") + ") AND (" + getOutgoingTypeClause() + ") AND (" + getTypeField() + " & " + Types.SPECIAL_TYPES_MASK + " = " + Types.SPECIAL_TYPE_GIFT_BADGE + ") AND " + VIEWED_RECEIPT_COUNT + " = 0";
     List<MarkedMessageInfo> results    = new LinkedList<>();
 
@@ -466,6 +479,7 @@ public class MmsDatabase extends MessageDatabase {
         RecipientId   recipientId   = RecipientId.from(CursorUtil.requireLong(cursor, RECIPIENT_ID));
         long          dateSent      = CursorUtil.requireLong(cursor, DATE_SENT);
         SyncMessageId syncMessageId = new SyncMessageId(recipientId, dateSent);
+        StoryType     storyType    = StoryType.fromCode(CursorUtil.requireInt(cursor, STORY_TYPE));
 
         results.add(new MarkedMessageInfo(threadId, syncMessageId, new MessageId(messageId, true), null));
 
@@ -568,6 +582,16 @@ public class MmsDatabase extends MessageDatabase {
   }
 
   @Override
+  public void insertThreadMergeEvent(@NonNull RecipientId recipientId, long threadId, @NonNull ThreadMergeEvent event) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void insertSmsExportMessage(@NonNull RecipientId recipientId, long threadId) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public void endTransaction(SQLiteDatabase database) {
     database.endTransaction();
   }
@@ -611,17 +635,17 @@ public class MmsDatabase extends MessageDatabase {
       whereArgs = SqlUtil.buildArgs(recipientId);
     } else {
       where += " AND " + THREAD_ID_WHERE;
-      whereArgs = SqlUtil.buildArgs(1, 0, threadId);
+      whereArgs = SqlUtil.buildArgs(threadId);
     }
 
     return new Reader(rawQuery(where, whereArgs));
   }
 
   @Override
-  public @NonNull MessageDatabase.Reader getAllOutgoingStories(boolean reverse) {
+  public @NonNull MessageDatabase.Reader getAllOutgoingStories(boolean reverse, int limit) {
     String where = IS_STORY_CLAUSE + " AND (" + getOutgoingTypeClause() + ")";
 
-    return new Reader(rawQuery(where, null, reverse, -1L));
+    return new Reader(rawQuery(where, null, reverse, limit));
   }
 
   @Override
@@ -634,11 +658,36 @@ public class MmsDatabase extends MessageDatabase {
   }
 
   @Override
-  public @NonNull MessageDatabase.Reader getAllStoriesFor(@NonNull RecipientId recipientId) {
+  public @NonNull List<MarkedMessageInfo> markAllIncomingStoriesRead() {
+    String where = IS_STORY_CLAUSE + " AND NOT (" + getOutgoingTypeClause() + ") AND " + READ + " = 0";
+
+    List<MarkedMessageInfo> markedMessageInfos = setMessagesRead(where, null);
+    notifyConversationListListeners();
+
+    return markedMessageInfos;
+  }
+
+  @Override
+  public void markOnboardingStoryRead() {
+    RecipientId recipientId = SignalStore.releaseChannelValues().getReleaseChannelRecipientId();
+    if (recipientId == null) {
+      return;
+    }
+
+    String where = IS_STORY_CLAUSE + " AND NOT (" + getOutgoingTypeClause() + ") AND " + READ + " = 0 AND " + RECIPIENT_ID + " = ?";
+
+    List<MarkedMessageInfo> markedMessageInfos = setMessagesRead(where, SqlUtil.buildArgs(recipientId));
+    if (!markedMessageInfos.isEmpty()) {
+      notifyConversationListListeners();
+    }
+  }
+
+  @Override
+  public @NonNull MessageDatabase.Reader getAllStoriesFor(@NonNull RecipientId recipientId, int limit) {
     long     threadId  = SignalDatabase.threads().getThreadIdIfExistsFor(recipientId);
     String   where     = IS_STORY_CLAUSE + " AND " + THREAD_ID_WHERE;
     String[] whereArgs = SqlUtil.buildArgs(threadId);
-    Cursor   cursor    = rawQuery(where, whereArgs, false, -1L);
+    Cursor   cursor    = rawQuery(where, whereArgs, false, limit);
 
     return new Reader(cursor);
   }
@@ -779,7 +828,7 @@ public class MmsDatabase extends MessageDatabase {
                            + "FROM " + TABLE_NAME + "\n"
                            + "JOIN " + ThreadDatabase.TABLE_NAME + "\n"
                            + "ON " + TABLE_NAME + "." +  THREAD_ID + " = " + ThreadDatabase.TABLE_NAME + "." + ThreadDatabase.ID + "\n"
-                           + "WHERE " + IS_STORY_CLAUSE + " AND (" + getOutgoingTypeClause() + ") = 0 AND " + VIEWED_RECEIPT_COUNT + " = 0";
+                           + "WHERE " + IS_STORY_CLAUSE + " AND (" + getOutgoingTypeClause() + ") = 0 AND " + VIEWED_RECEIPT_COUNT + " = 0 AND " + TABLE_NAME + "." + READ + " = 0";
 
     try (Cursor cursor = db.rawQuery(query, null)) {
       if (cursor != null) {
@@ -796,7 +845,8 @@ public class MmsDatabase extends MessageDatabase {
   }
 
   @Override
-  public @NonNull List<StoryResult> getOrderedStoryRecipientsAndIds() {
+  public @NonNull List<StoryResult> getOrderedStoryRecipientsAndIds(boolean isOutgoingOnly) {
+    String         where = "WHERE is_story > 0 AND remote_deleted = 0" + (isOutgoingOnly ? " AND is_outgoing != 0" : "") + "\n";
     SQLiteDatabase db    = getReadableDatabase();
     String         query = "SELECT\n"
                            + " mms.date AS sent_timestamp,\n"
@@ -810,7 +860,7 @@ public class MmsDatabase extends MessageDatabase {
                            + "FROM mms\n"
                            + "JOIN thread\n"
                            + "ON mms.thread_id = thread._id\n"
-                           + "WHERE is_story > 0 AND remote_deleted = 0\n"
+                           + where
                            + "ORDER BY\n"
                            + "is_unread DESC,\n"
                            + "CASE\n"
@@ -827,7 +877,8 @@ public class MmsDatabase extends MessageDatabase {
         while (cursor.moveToNext()) {
           results.add(new StoryResult(RecipientId.from(CursorUtil.requireLong(cursor, ThreadDatabase.RECIPIENT_ID)),
                                            CursorUtil.requireLong(cursor, "mms_id"),
-                                           CursorUtil.requireLong(cursor, "sent_timestamp")));
+                                           CursorUtil.requireLong(cursor, "sent_timestamp"),
+                                           CursorUtil.requireBoolean(cursor, "is_outgoing")));
         }
 
         return results;
@@ -882,28 +933,40 @@ public class MmsDatabase extends MessageDatabase {
   }
 
   @Override
-  public boolean hasSelfReplyInGroupStory(long parentStoryId) {
-    SQLiteDatabase db        = databaseHelper.getSignalReadableDatabase();
-    String[]       columns   = new String[]{"COUNT(*)"};
-    String         where     = PARENT_STORY_ID + " = ? AND (" + getOutgoingTypeClause() + ")";
-    String[]       whereArgs = SqlUtil.buildArgs(parentStoryId);
-
-    try (Cursor cursor = db.query(TABLE_NAME, columns, where, whereArgs, null, null, null, null)) {
-      return cursor != null && cursor.moveToNext() && cursor.getInt(0) > 0;
-    }
+  public boolean hasGroupReplyOrReactionInStory(long parentStoryId) {
+    return hasSelfReplyInStory(-parentStoryId);
   }
 
   @Override
-  public @Nullable Long getOldestStorySendTimestamp() {
-    SQLiteDatabase db        = databaseHelper.getSignalReadableDatabase();
-    String[]       columns   = new String[]{DATE_SENT};
-    String         where     = IS_STORY_CLAUSE;
-    String         orderBy   = DATE_SENT + " ASC";
-    String         limit     = "1";
+  public @Nullable Long getOldestStorySendTimestamp(boolean hasSeenReleaseChannelStories) {
+    long           releaseChannelThreadId = getReleaseChannelThreadId(hasSeenReleaseChannelStories);
+    SQLiteDatabase db                     = databaseHelper.getSignalReadableDatabase();
+    String[]       columns                = new String[] { DATE_SENT };
+    String         where                  = IS_STORY_CLAUSE + " AND " + THREAD_ID + " != ?";
+    String         orderBy                = DATE_SENT + " ASC";
+    String         limit                  = "1";
 
-    try (Cursor cursor = db.query(TABLE_NAME, columns, where, null, null, null, orderBy, limit)) {
+    try (Cursor cursor = db.query(TABLE_NAME, columns, where, SqlUtil.buildArgs(releaseChannelThreadId), null, null, orderBy, limit)) {
       return cursor != null && cursor.moveToNext() ? cursor.getLong(0) : null;
     }
+  }
+
+  private static long getReleaseChannelThreadId(boolean hasSeenReleaseChannelStories) {
+    if (hasSeenReleaseChannelStories) {
+      return -1L;
+    }
+
+    RecipientId releaseChannelRecipientId = SignalStore.releaseChannelValues().getReleaseChannelRecipientId();
+    if (releaseChannelRecipientId == null) {
+      return -1L;
+    }
+
+    Long releaseChannelThreadId = SignalDatabase.threads().getThreadIdFor(releaseChannelRecipientId);
+    if (releaseChannelThreadId == null) {
+      return -1L;
+    }
+
+    return releaseChannelThreadId;
   }
 
   @Override
@@ -915,26 +978,27 @@ public class MmsDatabase extends MessageDatabase {
   }
 
   @Override
-  public int deleteStoriesOlderThan(long timestamp) {
+  public int deleteStoriesOlderThan(long timestamp, boolean hasSeenReleaseChannelStories) {
     SQLiteDatabase db = databaseHelper.getSignalWritableDatabase();
 
     db.beginTransaction();
     try {
-      String   storiesBeforeTimestampWhere = IS_STORY_CLAUSE + " AND " + DATE_SENT + " < ?";
-      String[] sharedArgs                  = SqlUtil.buildArgs(timestamp);
-      String   deleteStoryRepliesQuery     = "DELETE FROM " + TABLE_NAME + " " +
-                                             "WHERE " + PARENT_STORY_ID + " > 0 AND " + PARENT_STORY_ID + " IN (" +
-                                                 "SELECT " + ID + " " +
-                                                 "FROM " + TABLE_NAME + " " +
-                                                 "WHERE " + storiesBeforeTimestampWhere +
-                                             ")";
-      String   disassociateQuoteQuery      = "UPDATE " + TABLE_NAME + " " +
-                                             "SET " + QUOTE_MISSING + " = 1, " + QUOTE_BODY + " = '' " +
-                                             "WHERE " + PARENT_STORY_ID + " < 0 AND ABS(" + PARENT_STORY_ID + ") IN (" +
-                                                 "SELECT " + ID + " " +
-                                                 "FROM " + TABLE_NAME + " " +
-                                                 "WHERE " + storiesBeforeTimestampWhere +
-                                             ")";
+      long        releaseChannelThreadId      = getReleaseChannelThreadId(hasSeenReleaseChannelStories);
+      String      storiesBeforeTimestampWhere = IS_STORY_CLAUSE + " AND " + DATE_SENT + " < ? AND " + THREAD_ID + " != ?";
+      String[]    sharedArgs                  = SqlUtil.buildArgs(timestamp, releaseChannelThreadId);
+      String      deleteStoryRepliesQuery     = "DELETE FROM " + TABLE_NAME + " " +
+                                                "WHERE " + PARENT_STORY_ID + " > 0 AND " + PARENT_STORY_ID + " IN (" +
+                                                    "SELECT " + ID + " " +
+                                                    "FROM " + TABLE_NAME + " " +
+                                                    "WHERE " + storiesBeforeTimestampWhere +
+                                                ")";
+      String      disassociateQuoteQuery      = "UPDATE " + TABLE_NAME + " " +
+                                                "SET " + QUOTE_MISSING + " = 1, " + QUOTE_BODY + " = '' " +
+                                                "WHERE " + PARENT_STORY_ID + " < 0 AND ABS(" + PARENT_STORY_ID + ") IN (" +
+                                                    "SELECT " + ID + " " +
+                                                    "FROM " + TABLE_NAME + " " +
+                                                    "WHERE " + storiesBeforeTimestampWhere +
+                                                ")";
 
       db.execSQL(deleteStoryRepliesQuery, sharedArgs);
       db.execSQL(disassociateQuoteQuery, sharedArgs);
@@ -961,6 +1025,17 @@ public class MmsDatabase extends MessageDatabase {
     } finally {
       db.endTransaction();
     }
+  }
+
+  private void disassociateStoryQuotes(long storyId) {
+    ContentValues contentValues = new ContentValues(2);
+    contentValues.put(QUOTE_MISSING, 1);
+    contentValues.putNull(QUOTE_BODY);
+
+    getWritableDatabase().update(TABLE_NAME,
+                                 contentValues,
+                                 PARENT_STORY_ID + " = ?",
+                                 SqlUtil.buildArgs(new ParentStoryId.DirectReply(storyId).serialize()));
   }
 
   @Override
@@ -1043,6 +1118,22 @@ public class MmsDatabase extends MessageDatabase {
   }
 
   @Override
+  public int getIncomingMeaningfulMessageCountSince(long threadId, long afterTime) {
+    SQLiteDatabase db                      = databaseHelper.getSignalReadableDatabase();
+    String[]       projection              = SqlUtil.COUNT;
+    String         where                   = THREAD_ID + " = ? AND " + STORY_TYPE + " = ? AND " + PARENT_STORY_ID + " <= ? AND " + DATE_RECEIVED + " >= ?";
+    String[]       whereArgs               = SqlUtil.buildArgs(threadId, 0, 0, afterTime);
+
+    try (Cursor cursor = db.query(TABLE_NAME, projection, where, whereArgs, null, null, null, "1")) {
+      if (cursor != null && cursor.moveToFirst()) {
+        return cursor.getInt(0);
+      } else {
+        return 0;
+      }
+    }
+  }
+
+  @Override
   public void addFailures(long messageId, List<NetworkFailure> failure) {
     try {
       addToDocument(messageId, NETWORK_FAILURE, failure, NetworkFailureSet.class);
@@ -1061,13 +1152,28 @@ public class MmsDatabase extends MessageDatabase {
   }
 
   @Override
-  public Set<MessageUpdate> incrementReceiptCount(SyncMessageId messageId, long timestamp, @NonNull ReceiptType receiptType, boolean storiesOnly) {
+  public Set<MessageUpdate> incrementReceiptCount(SyncMessageId messageId, long timestamp, @NonNull ReceiptType receiptType, MessageQualifier messageQualifier) {
     SQLiteDatabase     database       = databaseHelper.getSignalWritableDatabase();
     Set<MessageUpdate> messageUpdates = new HashSet<>();
 
+    final String qualifierWhere;
+    switch (messageQualifier) {
+      case NORMAL:
+        qualifierWhere = " AND NOT (" + IS_STORY_CLAUSE + ")";
+        break;
+      case STORY:
+        qualifierWhere = " AND " + IS_STORY_CLAUSE;
+        break;
+      case ALL:
+        qualifierWhere = "";
+        break;
+      default:
+        throw new IllegalArgumentException("Unsupported qualifier: " + messageQualifier);
+    }
+
     try (Cursor cursor = SQLiteDatabaseExtensionsKt.select(database, ID, THREAD_ID, MESSAGE_BOX, RECIPIENT_ID, receiptType.getColumnName(), RECEIPT_TIMESTAMP)
                                                    .from(TABLE_NAME)
-                                                   .where(DATE_SENT + " = ?" + (storiesOnly ? " AND " + IS_STORY_CLAUSE : ""), messageId.getTimetamp())
+                                                   .where(DATE_SENT + " = ?" + qualifierWhere, messageId.getTimetamp())
                                                    .run())
     {
       while (cursor.moveToNext()) {
@@ -1174,8 +1280,12 @@ public class MmsDatabase extends MessageDatabase {
   }
 
   private Cursor rawQuery(@NonNull String where, @Nullable String[] arguments, boolean reverse, long limit) {
+    return rawQuery(MMS_PROJECTION, where, arguments, reverse, limit);
+  }
+
+  private Cursor rawQuery(@NonNull String[] projection, @NonNull String where, @Nullable String[] arguments, boolean reverse, long limit) {
     SQLiteDatabase database = databaseHelper.getSignalReadableDatabase();
-    String rawQueryString   = "SELECT " + Util.join(MMS_PROJECTION, ",") +
+    String rawQueryString   = "SELECT " + Util.join(projection, ",") +
                               " FROM " + MmsDatabase.TABLE_NAME +  " LEFT OUTER JOIN " + AttachmentDatabase.TABLE_NAME +
                               " ON (" + MmsDatabase.TABLE_NAME + "." + MmsDatabase.ID + " = " + AttachmentDatabase.TABLE_NAME + "." + AttachmentDatabase.MMS_ID + ")" +
                               " WHERE " + where + " GROUP BY " + MmsDatabase.TABLE_NAME + "." + MmsDatabase.ID;
@@ -1334,6 +1444,7 @@ public class MmsDatabase extends MessageDatabase {
       SignalDatabase.messageLog().deleteAllRelatedToMessage(messageId, true);
       SignalDatabase.reactions().deleteReactions(new MessageId(messageId, true));
       deleteGroupStoryReplies(messageId);
+      disassociateStoryQuotes(messageId);
 
       threadId = getThreadIdForMessage(messageId);
       SignalDatabase.threads().update(threadId, false);
@@ -1444,6 +1555,38 @@ public class MmsDatabase extends MessageDatabase {
   }
 
   @Override
+  public @NonNull List<StoryType> getStoryTypes(@NonNull List<MessageId> messageIds) {
+    List<Long> mmsMessages = messageIds.stream()
+                                       .filter(MessageId::isMms)
+                                       .map(MessageId::getId)
+                                       .collect(java.util.stream.Collectors.toList());
+
+    if (mmsMessages.isEmpty()) {
+      return Collections.emptyList();
+    }
+
+    String[]                 projection  = SqlUtil.buildArgs(ID, STORY_TYPE);
+    List<SqlUtil.Query>      queries     = SqlUtil.buildCollectionQuery(ID, mmsMessages);
+    HashMap<Long, StoryType> storyTypes  = new HashMap<>();
+
+    for (final SqlUtil.Query query : queries) {
+      try (Cursor cursor = getWritableDatabase().query(TABLE_NAME, projection, query.getWhere(), query.getWhereArgs(), null, null, null)) {
+        while (cursor != null && cursor.moveToNext()) {
+          storyTypes.put(CursorUtil.requireLong(cursor, ID), StoryType.fromCode(CursorUtil.requireInt(cursor, STORY_TYPE)));
+        }
+      }
+    }
+
+    return messageIds.stream().map(id -> {
+      if (id.isMms() && storyTypes.containsKey(id.getId())) {
+        return storyTypes.get(id.getId());
+      } else {
+        return StoryType.NONE;
+      }
+    }).collect(java.util.stream.Collectors.toList());
+  }
+
+  @Override
   public List<MarkedMessageInfo> setEntireThreadRead(long threadId) {
     return setMessagesRead(THREAD_ID + " = ? AND " + STORY_TYPE + " = 0 AND " + PARENT_STORY_ID + " <= 0", new String[] { String.valueOf(threadId)});
   }
@@ -1462,7 +1605,7 @@ public class MmsDatabase extends MessageDatabase {
     database.beginTransaction();
 
     try {
-      cursor = database.query(TABLE_NAME, new String[] {ID, RECIPIENT_ID, DATE_SENT, MESSAGE_BOX, EXPIRES_IN, EXPIRE_STARTED, THREAD_ID }, where, arguments, null, null, null);
+      cursor = database.query(TABLE_NAME, new String[] {ID, RECIPIENT_ID, DATE_SENT, MESSAGE_BOX, EXPIRES_IN, EXPIRE_STARTED, THREAD_ID, STORY_TYPE }, where, arguments, null, null, null);
 
       while(cursor != null && cursor.moveToNext()) {
         if (Types.isSecureType(CursorUtil.requireLong(cursor, MESSAGE_BOX))) {
@@ -1474,6 +1617,7 @@ public class MmsDatabase extends MessageDatabase {
           long           expireStarted  = CursorUtil.requireLong(cursor, EXPIRE_STARTED);
           SyncMessageId  syncMessageId  = new SyncMessageId(recipientId, dateSent);
           ExpirationInfo expirationInfo = new ExpirationInfo(messageId, expiresIn, expireStarted, true);
+          StoryType      storyType      = StoryType.fromCode(CursorUtil.requireInt(cursor, STORY_TYPE));
 
           if (!recipientId.equals(releaseChannelId)) {
             result.add(new MarkedMessageInfo(threadId, syncMessageId, new MessageId(messageId, true), expirationInfo));
@@ -1494,51 +1638,6 @@ public class MmsDatabase extends MessageDatabase {
     }
 
     return result;
-  }
-
-  @Override
-  @NonNull MmsSmsDatabase.TimestampReadResult setTimestampRead(SyncMessageId messageId, long proposedExpireStarted, @NonNull Map<Long, Long> threadToLatestRead) {
-    SQLiteDatabase         database   = databaseHelper.getSignalWritableDatabase();
-    List<Pair<Long, Long>> expiring   = new LinkedList<>();
-    String[]               projection = new String[] { ID, THREAD_ID, MESSAGE_BOX, EXPIRES_IN, EXPIRE_STARTED, RECIPIENT_ID };
-    String                 query      = DATE_SENT + " = ?";
-    String[]               args       = SqlUtil.buildArgs(messageId.getTimetamp());
-    List<Long>             threads    = new LinkedList<>();
-
-    try (Cursor cursor = database.query(TABLE_NAME, projection, query, args, null, null, null)) {
-      while (cursor.moveToNext()) {
-        RecipientId theirRecipientId = RecipientId.from(cursor.getLong(cursor.getColumnIndexOrThrow(RECIPIENT_ID)));
-        RecipientId ourRecipientId   = messageId.getRecipientId();
-
-        if (ourRecipientId.equals(theirRecipientId) || Recipient.resolved(theirRecipientId).isGroup() || ourRecipientId.equals(Recipient.self().getId())) {
-          long id            = cursor.getLong(cursor.getColumnIndexOrThrow(ID));
-          long threadId      = cursor.getLong(cursor.getColumnIndexOrThrow(THREAD_ID));
-          long expiresIn     = cursor.getLong(cursor.getColumnIndexOrThrow(EXPIRES_IN));
-          long expireStarted = cursor.getLong(cursor.getColumnIndexOrThrow(EXPIRE_STARTED));
-
-          expireStarted = expireStarted > 0 ? Math.min(proposedExpireStarted, expireStarted) : proposedExpireStarted;
-
-          ContentValues values = new ContentValues();
-          values.put(READ, 1);
-          values.put(REACTIONS_UNREAD, 0);
-          values.put(REACTIONS_LAST_SEEN, System.currentTimeMillis());
-
-          if (expiresIn > 0) {
-            values.put(EXPIRE_STARTED, expireStarted);
-            expiring.add(new Pair<>(id, expiresIn));
-          }
-
-          database.update(TABLE_NAME, values, ID_WHERE, SqlUtil.buildArgs(id));
-
-          threads.add(threadId);
-
-          Long latest = threadToLatestRead.get(threadId);
-          threadToLatestRead.put(threadId, (latest != null) ? Math.max(latest, messageId.getTimetamp()) : messageId.getTimetamp());
-        }
-      }
-    }
-
-    return new MmsSmsDatabase.TimestampReadResult(expiring, threads);
   }
 
   @Override
@@ -1697,6 +1796,10 @@ public class MmsDatabase extends MessageDatabase {
           return new OutgoingGroupUpdateMessage(recipient, new MessageGroupContext(body, Types.isGroupV2(outboxType)), attachments, timestamp, 0, false, quote, contacts, previews, mentions);
         } else if (Types.isExpirationTimerUpdate(outboxType)) {
           return new OutgoingExpirationUpdateMessage(recipient, timestamp, expiresIn);
+        } else if (Types.isRequestToActivatePayments(outboxType)) {
+          return new OutgoingRequestToActivatePaymentMessages(recipient, timestamp, expiresIn);
+        } else if (Types.isPaymentsActivated(outboxType)) {
+          return new OutgoingPaymentsActivatedMessages(recipient, timestamp, expiresIn);
         }
 
         GiftBadge giftBadge = null;
@@ -1828,6 +1931,8 @@ public class MmsDatabase extends MessageDatabase {
 
     ContentValues contentValues = new ContentValues();
 
+    boolean silentUpdate = (mailbox & Types.GROUP_UPDATE_BIT) > 0;
+
     contentValues.put(DATE_SENT, retrieved.getSentTimeMillis());
     contentValues.put(DATE_SERVER, retrieved.getServerTimeMillis());
     contentValues.put(RECIPIENT_ID, retrieved.getFrom().serialize());
@@ -1844,7 +1949,7 @@ public class MmsDatabase extends MessageDatabase {
     contentValues.put(VIEW_ONCE, retrieved.isViewOnce() ? 1 : 0);
     contentValues.put(STORY_TYPE, retrieved.getStoryType().getCode());
     contentValues.put(PARENT_STORY_ID, retrieved.getParentStoryId() != null ? retrieved.getParentStoryId().serialize() : 0);
-    contentValues.put(READ, retrieved.isExpirationUpdate() ? 1 : 0);
+    contentValues.put(READ, (silentUpdate || retrieved.isExpirationUpdate()) ? 1 : 0);
     contentValues.put(UNIDENTIFIED, retrieved.isUnidentified());
     contentValues.put(SERVER_GUID, retrieved.getServerGuid());
 
@@ -1874,12 +1979,26 @@ public class MmsDatabase extends MessageDatabase {
       return Optional.empty();
     }
 
-    long messageId = insertMediaMessage(threadId, retrieved.getBody(), retrieved.getAttachments(), quoteAttachments, retrieved.getSharedContacts(), retrieved.getLinkPreviews(), retrieved.getMentions(), retrieved.getMessageRanges(), contentValues, null, true);
+    boolean updateThread       = retrieved.getStoryType() == StoryType.NONE;
+    boolean keepThreadArchived = SignalStore.settings().shouldKeepMutedChatsArchived() && Recipient.resolved(retrieved.getFrom()).isMuted();
+    long    messageId          = insertMediaMessage(threadId,
+                                                    retrieved.getBody(),
+                                                    retrieved.getAttachments(),
+                                                    quoteAttachments,
+                                                    retrieved.getSharedContacts(),
+                                                    retrieved.getLinkPreviews(),
+                                                    retrieved.getMentions(),
+                                                    retrieved.getMessageRanges(),
+                                                    contentValues,
+                                                    null,
+                                                    updateThread,
+                                                    !keepThreadArchived);
 
     boolean isNotStoryGroupReply = retrieved.getParentStoryId() == null || !retrieved.getParentStoryId().isGroupReply();
-    if (!Types.isExpirationTimerUpdate(mailbox) && !retrieved.getStoryType().isStory() && isNotStoryGroupReply) {
-      SignalDatabase.threads().incrementUnread(threadId, 1);
-      SignalDatabase.threads().update(threadId, true);
+    if (!Types.isPaymentsActivated(mailbox) && !Types.isRequestToActivatePayments(mailbox) && !Types.isExpirationTimerUpdate(mailbox) && !retrieved.getStoryType().isStory() && isNotStoryGroupReply) {
+      boolean incrementUnreadMentions = !retrieved.getMentions().isEmpty() && retrieved.getMentions().stream().anyMatch(m -> m.getRecipientId().equals(Recipient.self().getId()));
+      SignalDatabase.threads().incrementUnread(threadId, 1, incrementUnreadMentions ? 1 : 0);
+      SignalDatabase.threads().update(threadId, !keepThreadArchived);
     }
 
     notifyConversationListeners(threadId);
@@ -1900,6 +2019,14 @@ public class MmsDatabase extends MessageDatabase {
 
     if (retrieved.isExpirationUpdate()) {
       type |= Types.EXPIRATION_TIMER_UPDATE_BIT;
+    }
+
+    if (retrieved.isActivatePaymentsRequest()) {
+      type |= Types.SPECIAL_TYPE_ACTIVATE_PAYMENTS_REQUEST;
+    }
+
+    if (retrieved.isPaymentsActivated()) {
+      type |= Types.SPECIAL_TYPE_PAYMENTS_ACTIVATED;
     }
 
     return insertMessageInbox(retrieved, contentLocation, threadId, type);
@@ -1931,6 +2058,20 @@ public class MmsDatabase extends MessageDatabase {
       }
 
       type |= Types.SPECIAL_TYPE_GIFT_BADGE;
+    }
+
+    if (retrieved.isActivatePaymentsRequest()) {
+      if (hasSpecialType) {
+        throw new MmsException("Cannot insert message with multiple special types.");
+      }
+      type |= Types.SPECIAL_TYPE_ACTIVATE_PAYMENTS_REQUEST;
+    }
+
+    if (retrieved.isPaymentsActivated()) {
+      if (hasSpecialType) {
+        throw new MmsException("Cannot insert message with multiple special types.");
+      }
+      type |= Types.SPECIAL_TYPE_PAYMENTS_ACTIVATED;
     }
 
     return insertMessageInbox(retrieved, "", threadId, type);
@@ -1988,7 +2129,7 @@ public class MmsDatabase extends MessageDatabase {
     notifyConversationListeners(threadId);
 
     if (org.thoughtcrime.securesms.util.Util.isDefaultSmsProvider(context)) {
-      SignalDatabase.threads().incrementUnread(threadId, 1);
+      SignalDatabase.threads().incrementUnread(threadId, 1, 0);
     }
 
     SignalDatabase.threads().update(threadId, true);
@@ -2100,6 +2241,20 @@ public class MmsDatabase extends MessageDatabase {
       type |= Types.SPECIAL_TYPE_GIFT_BADGE;
     }
 
+    if (message.isRequestToActivatePayments()) {
+      if (hasSpecialType) {
+        throw new MmsException("Cannot insert message with multiple special types.");
+      }
+      type |= Types.SPECIAL_TYPE_ACTIVATE_PAYMENTS_REQUEST;
+    }
+
+    if (message.isPaymentsActivated()) {
+      if (hasSpecialType) {
+        throw new MmsException("Cannot insert message with multiple special types.");
+      }
+      type |= Types.SPECIAL_TYPE_PAYMENTS_ACTIVATED;
+    }
+
     Map<RecipientId, EarlyReceiptCache.Receipt> earlyDeliveryReceipts = earlyDeliveryReceiptCache.remove(message.getSentTimeMillis());
 
     ContentValues contentValues = new ContentValues();
@@ -2144,7 +2299,7 @@ public class MmsDatabase extends MessageDatabase {
 
     MentionUtil.UpdatedBodyAndMentions updatedBodyAndMentions = MentionUtil.updateBodyAndMentionsWithPlaceholders(message.getBody(), message.getMentions());
 
-    long messageId = insertMediaMessage(threadId, updatedBodyAndMentions.getBodyAsString(), message.getAttachments(), quoteAttachments, message.getSharedContacts(), message.getLinkPreviews(), updatedBodyAndMentions.getMentions(), null, contentValues, insertListener, false);
+    long messageId = insertMediaMessage(threadId, updatedBodyAndMentions.getBodyAsString(), message.getAttachments(), quoteAttachments, message.getSharedContacts(), message.getLinkPreviews(), updatedBodyAndMentions.getMentions(), null, contentValues, insertListener, false, false);
 
     if (message.getRecipient().isGroup()) {
       OutgoingGroupUpdateMessage outgoingGroupUpdateMessage = (message instanceof OutgoingGroupUpdateMessage) ? (OutgoingGroupUpdateMessage) message : null;
@@ -2156,7 +2311,7 @@ public class MmsDatabase extends MessageDatabase {
         MessageGroupContext.GroupV2Properties groupV2Properties = outgoingGroupUpdateMessage.requireGroupV2Properties();
         members.addAll(Stream.of(groupV2Properties.getAllActivePendingAndRemovedMembers())
                              .distinct()
-                             .map(uuid -> RecipientId.from(ServiceId.from(uuid), null))
+                             .map(uuid -> RecipientId.from(ServiceId.from(uuid)))
                              .toList());
         members.remove(Recipient.self().getId());
       } else {
@@ -2218,7 +2373,8 @@ public class MmsDatabase extends MessageDatabase {
                                   @Nullable BodyRangeList messageRanges,
                                   @NonNull ContentValues contentValues,
                                   @Nullable InsertListener insertListener,
-                                  boolean updateThread)
+                                  boolean updateThread,
+                                  boolean unarchive)
       throws MmsException
   {
     SQLiteDatabase     db              = databaseHelper.getSignalWritableDatabase();
@@ -2290,7 +2446,7 @@ public class MmsDatabase extends MessageDatabase {
 
       if (updateThread) {
         SignalDatabase.threads().setLastScrolled(contentValuesThreadId, 0);
-        SignalDatabase.threads().update(threadId, true);
+        SignalDatabase.threads().update(threadId, unarchive);
       }
     }
   }
@@ -2417,6 +2573,60 @@ public class MmsDatabase extends MessageDatabase {
     }
 
     return ids;
+  }
+
+  @Override
+  public Cursor getUnexportedInsecureMessages(int limit) {
+    return rawQuery(
+        SqlUtil.appendArg(MMS_PROJECTION, EXPORT_STATE),
+        getInsecureMessageClause() + " AND NOT " + EXPORTED,
+        null,
+        false,
+        limit
+    );
+  }
+
+  @Override
+  public long getUnexportedInsecureMessagesEstimatedSize() {
+    Cursor messageTextSize = SQLiteDatabaseExtensionsKt.select(getReadableDatabase(), "SUM(LENGTH(" + BODY + "))")
+                                                       .from(TABLE_NAME)
+                                                       .where(getInsecureMessageClause() + " AND " + EXPORTED + " < ?", MessageExportStatus.EXPORTED)
+                                                       .run();
+
+    long bodyTextSize = CursorExtensionsKt.readToSingleLong(messageTextSize);
+
+    String select   = "SUM(" + AttachmentDatabase.TABLE_NAME + "." + AttachmentDatabase.SIZE + ") AS s";
+    String fromJoin = TABLE_NAME + " INNER JOIN " + AttachmentDatabase.TABLE_NAME + " ON " + TABLE_NAME + "." + ID + " = " + AttachmentDatabase.TABLE_NAME + "." + AttachmentDatabase.MMS_ID;
+    String where    = getInsecureMessageClause() + " AND " + EXPORTED + " < " + MessageExportStatus.EXPORTED.serialize();
+
+    long fileSize = CursorExtensionsKt.readToSingleLong(getReadableDatabase().rawQuery("SELECT " + select + " FROM " + fromJoin + " WHERE " + where, null));
+
+    return bodyTextSize + fileSize;
+  }
+
+  @Override
+  public void deleteExportedMessages() {
+    beginTransaction();
+    try {
+      List<Long> threadsToUpdate = new LinkedList<>();
+      try (Cursor cursor = getReadableDatabase().query(TABLE_NAME, THREAD_ID_PROJECTION, EXPORTED + " = ?", SqlUtil.buildArgs(MessageExportStatus.EXPORTED), THREAD_ID, null, null, null)) {
+        while (cursor.moveToNext()) {
+          threadsToUpdate.add(CursorUtil.requireLong(cursor, THREAD_ID));
+        }
+      }
+
+      getWritableDatabase().delete(TABLE_NAME, EXPORTED + " = ?", SqlUtil.buildArgs(MessageExportStatus.EXPORTED));
+
+      for (final long threadId : threadsToUpdate) {
+        SignalDatabase.threads().update(threadId, false);
+      }
+
+      SignalDatabase.attachments().deleteAbandonedAttachmentFiles();
+
+      setTransactionSuccessful();
+    } finally {
+      endTransaction();
+    }
   }
 
   @Override
@@ -2549,6 +2759,18 @@ public class MmsDatabase extends MessageDatabase {
     return new OutgoingMessageReader(message, threadId);
   }
 
+  @Override
+  public void remapRecipient(@NonNull RecipientId fromId, @NonNull RecipientId toId) {
+
+  }
+
+  @Override
+  public void remapThread(long fromId, long toId) {
+    ContentValues values = new ContentValues();
+    values.put(SmsDatabase.THREAD_ID, toId);
+    getWritableDatabase().update(TABLE_NAME, values, THREAD_ID + " = ?", SqlUtil.buildArgs(fromId));
+  }
+
   public static class Status {
     public static final int DOWNLOAD_INITIALIZED     = 1;
     public static final int DOWNLOAD_NO_CONNECTIVITY = 2;
@@ -2629,6 +2851,15 @@ public class MmsDatabase extends MessageDatabase {
     }
   }
 
+  /**
+   * MessageRecord reader which implements the Iterable interface. This allows it to
+   * be used with many Kotlin Extension Functions as well as with for-each loops.
+   *
+   * Note that it's the responsibility of the developer using the reader to ensure that:
+   *
+   * 1. They only utilize one of the two interfaces (legacy or iterator)
+   * 1. They close this reader after use, preferably via try-with-resources or a use block.
+   */
   public static class Reader implements MessageDatabase.Reader {
 
     private final Cursor  cursor;
@@ -2656,6 +2887,25 @@ public class MmsDatabase extends MessageDatabase {
       } else {
         return getMediaMmsMessageRecord(cursor);
       }
+    }
+
+    @Override
+    public @NonNull MessageExportState getMessageExportStateForCurrentRecord() {
+      byte[] messageExportState = CursorUtil.requireBlob(cursor, MmsDatabase.EXPORT_STATE);
+      if (messageExportState == null) {
+        return MessageExportState.getDefaultInstance();
+      }
+
+      try {
+        return MessageExportState.parseFrom(messageExportState);
+      } catch (InvalidProtocolBufferException e) {
+        return MessageExportState.getDefaultInstance();
+      }
+    }
+
+    public int getCount() {
+      if (cursor == null) return 0;
+      else                return cursor.getCount();
     }
 
     private NotificationMmsMessageRecord getNotificationMmsMessageRecord(Cursor cursor) {
@@ -2850,6 +3100,29 @@ public class MmsDatabase extends MessageDatabase {
     public void close() {
       if (cursor != null) {
         cursor.close();
+      }
+    }
+
+    @NonNull
+    @Override
+    public Iterator<MessageRecord> iterator() {
+      return new ReaderIterator();
+    }
+
+    private class ReaderIterator implements Iterator<MessageRecord> {
+      @Override
+      public boolean hasNext() {
+        return cursor != null && cursor.getCount() != 0 && !cursor.isLast();
+      }
+
+      @Override
+      public MessageRecord next() {
+        MessageRecord record = getNext();
+        if (record == null) {
+          throw new NoSuchElementException();
+        }
+
+        return record;
       }
     }
   }

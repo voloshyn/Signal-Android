@@ -8,6 +8,7 @@ import org.thoughtcrime.securesms.database.MmsSmsColumns
 import org.thoughtcrime.securesms.database.model.MediaMmsMessageRecord
 import org.thoughtcrime.securesms.database.model.MessageRecord
 import org.thoughtcrime.securesms.database.model.MmsMessageRecord
+import org.thoughtcrime.securesms.database.model.Quote
 import org.thoughtcrime.securesms.database.model.databaseprotos.GiftBadge
 import org.thoughtcrime.securesms.mms.QuoteModel
 import org.thoughtcrime.securesms.mms.TextSlide
@@ -43,6 +44,12 @@ fun MessageRecord.hasThumbnail(): Boolean =
 fun MessageRecord.isStoryReaction(): Boolean =
   isMms && MmsSmsColumns.Types.isStoryReaction((this as MmsMessageRecord).type)
 
+fun MessageRecord.isPaymentActivationRequest(): Boolean =
+  isMms && MmsSmsColumns.Types.isRequestToActivatePayments((this as MmsMessageRecord).type)
+
+fun MessageRecord.isPaymentsActivated(): Boolean =
+  isMms && MmsSmsColumns.Types.isPaymentsActivated((this as MmsMessageRecord).type)
+
 fun MessageRecord.isBorderless(context: Context): Boolean {
   return isCaptionlessMms(context) &&
     hasThumbnail() &&
@@ -77,6 +84,13 @@ fun MessageRecord.hasExtraText(): Boolean {
 
 fun MessageRecord.hasQuote(): Boolean =
   isMms && (this as MmsMessageRecord).quote != null
+
+fun MessageRecord.getQuote(): Quote? =
+  if (isMms) {
+    (this as MmsMessageRecord).quote
+  } else {
+    null
+  }
 
 fun MessageRecord.hasLinkPreview(): Boolean =
   isMms && (this as MmsMessageRecord).linkPreviews.isNotEmpty()

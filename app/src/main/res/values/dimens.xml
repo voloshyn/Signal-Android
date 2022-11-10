@@ -31,6 +31,8 @@
     <dimen name="album_5_cell_size_small">69dp</dimen>
 
     <dimen name="camera_contacts_horizontal_margin">16dp</dimen>
+    <dimen name="camera_capture_button_size">124dp</dimen>
+    <dimen name="camera_capture_image_button_size">76dp</dimen>
 
     <dimen name="message_corner_radius">18dp</dimen>
     <dimen name="message_corner_collapse_radius">4dp</dimen>
@@ -77,6 +79,7 @@
     <dimen name="conversation_compose_height">44dp</dimen>
     <dimen name="conversation_individual_right_gutter">16dp</dimen>
     <dimen name="conversation_individual_left_gutter">16dp</dimen>
+    <dimen name="conversation_individual_received_left_gutter">8dp</dimen>
     <dimen name="conversation_group_left_gutter">52dp</dimen>
     <dimen name="conversation_vertical_message_spacing_default">8dp</dimen>
     <dimen name="conversation_vertical_message_spacing_collapse">1dp</dimen>
@@ -188,7 +191,9 @@
     <dimen name="transfer_split_top_padding">32dp</dimen>
     <dimen name="transfer_item_spacing">24dp</dimen>
 
-    <dimen name="create_payment_key_size">70dp</dimen>
+    <dimen name="create_payment_key_width">80dp</dimen>
+    <dimen name="create_payment_key_height">70dp</dimen>
+    <dimen name="create_payment_key_bottom_padding">16dp</dimen>
     <dimen name="create_payment_key_bottom_row_margin_bottom">33dp</dimen>
     <dimen name="create_payment_key_top_row_margin_top">11dp</dimen>
 
@@ -198,6 +203,9 @@
     <dimen name="dsl_settings_gutter">16dp</dimen>
     <dimen name="media_overview_toggle_gutter">2dp</dimen>
     <dimen name="wallpaper_selection_gutter">8dp</dimen>
+    <dimen name="safety_number_recipient_row_item_gutter">4dp</dimen>
+    <dimen name="selectable_list_item_margin">8dp</dimen>
+    <dimen name="selectable_list_item_padding">8dp</dimen>
 
     <dimen name="chat_colors_preview_bubble_max_width">240dp</dimen>
 
@@ -227,4 +235,12 @@
     <dimen name="stories_landing_item_thumb_outline_width">52dp</dimen>
     <dimen name="stories_landing_item_thumb_outline_height">76dp</dimen>
     <dimen name="stories_landing_item_text_horizontal_margin">20dp</dimen>
+
+    <dimen name="media_preview_video_timestamp_inset">20dp</dimen>
+    <dimen name="media_preview_bottom_bar_vertical_inner_margin">16dp</dimen>
+    <dimen name="media_preview_bottom_bar_vertical_outer_margin">16dp</dimen>
+    <dimen name="exo_media_preview_button_width">48dp</dimen>
+    <dimen name="exo_media_preview_button_height">48dp</dimen>
+    <dimen name="media_preview_button_horizontal_margin">8dp</dimen>
+    <dimen name="media_preview_lottie_button_dimen">36dp</dimen>
 </resources>

@@ -144,6 +144,7 @@ final class RecipientDialogViewModel extends ViewModel {
       activity.startActivity(StoryViewerActivity.createIntent(
           activity,
           new StoryViewerArgs.Builder(recipientDialogRepository.getRecipientId(), recipient.getValue().shouldHideStory())
+                             .isFromQuote(true)
                              .build()));
     }
   }
@@ -169,7 +170,7 @@ final class RecipientDialogViewModel extends ViewModel {
   }
 
   void onUnblockClicked(@NonNull FragmentActivity activity) {
-    recipientDialogRepository.getRecipient(recipient -> BlockUnblockDialog.showUnblockFor(activity, activity.getLifecycle(), recipient, () -> RecipientUtil.unblock(context, recipient)));
+    recipientDialogRepository.getRecipient(recipient -> BlockUnblockDialog.showUnblockFor(activity, activity.getLifecycle(), recipient, () -> RecipientUtil.unblock(recipient)));
   }
 
   void onViewSafetyNumberClicked(@NonNull Activity activity, @NonNull IdentityRecord identityRecord) {
@@ -183,6 +184,7 @@ final class RecipientDialogViewModel extends ViewModel {
       activity.startActivity(StoryViewerActivity.createIntent(
           activity,
           new StoryViewerArgs.Builder(recipientDialogRepository.getRecipientId(), recipient.getValue().shouldHideStory())
+                             .isFromQuote(true)
                              .build()));
     }
   }

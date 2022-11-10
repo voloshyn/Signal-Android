@@ -2,14 +2,20 @@
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/story_page_container"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    tools:context=".stories.viewer.StoryViewerActivity">
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    tools:context=".stories.viewer.StoryViewerActivity"
+    tools:viewBindingIgnore="true">
 
     <org.thoughtcrime.securesms.util.views.TouchInterceptingFrameLayout
         android:id="@+id/story_content_card_touch_interceptor"
         android:layout_width="0dp"
         android:layout_height="0dp"
+        android:clipChildren="false"
+        android:clipToPadding="false"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintDimensionRatio="9:16"
         app:layout_constraintEnd_toEndOf="parent"
@@ -25,40 +31,23 @@
             app:cardCornerRadius="18dp"
             app:cardElevation="0dp">
 
-            <ImageView
-                android:id="@+id/story_blur_container"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:importantForAccessibility="no"
-                android:scaleType="centerCrop" />
-
             <androidx.fragment.app.FragmentContainerView
                 android:id="@+id/story_content_container"
+                android:name="org.thoughtcrime.securesms.stories.viewer.post.StoryPostFragment"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 tools:background="@drawable/test_gradient" />
 
-            <org.thoughtcrime.securesms.stories.viewer.reply.StoriesSharedElementCrossFaderView
-                android:id="@+id/story_content_crossfader"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:alpha="0"
-                android:clipChildren="false"
-                android:clipToPadding="false"
-                android:transitionName="story"
-                app:cardCornerRadius="12dp"
-                app:cardElevation="0dp" />
-
             <View
                 android:id="@+id/story_gradient_top"
                 android:layout_width="match_parent"
-                android:layout_height="160dp"
+                android:layout_height="120dp"
                 android:background="@drawable/story_gradient_top" />
 
             <View
                 android:id="@+id/story_gradient_bottom"
                 android:layout_width="match_parent"
-                android:layout_height="160dp"
+                android:layout_height="200dp"
                 android:layout_gravity="bottom"
                 android:background="@drawable/story_gradient_bottom" />
 
@@ -71,10 +60,10 @@
 
         <org.thoughtcrime.securesms.stories.StoryVolumeOverlayView
             android:id="@+id/story_volume_overlay"
-            android:alpha="0"
-            android:layout_gravity="center_vertical|end"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_vertical|end"
+            android:alpha="0" />
 
     </org.thoughtcrime.securesms.util.views.TouchInterceptingFrameLayout>
 
@@ -96,6 +85,27 @@
         app:layout_constraintVertical_bias="0"
         tools:icon="@drawable/ic_reply_24_outline"
         tools:text="6 views 4 replies" />
+
+    <FrameLayout
+        android:id="@+id/sending_bar"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:background="@color/signal_colorSurface"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@id/views_and_replies_bar"
+        app:layout_constraintTop_toTopOf="@id/views_and_replies_bar">
+
+        <androidx.appcompat.widget.AppCompatTextView
+            android:id="@+id/sending_text_view"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:drawablePadding="10dp"
+            android:text="@string/StoriesLandingItem__sending"
+            android:textAppearance="@style/Signal.Text.Body"
+            app:drawableTint="@color/signal_colorOnSurface" />
+
+    </FrameLayout>
 
     <androidx.constraintlayout.widget.Barrier
         android:id="@+id/replies_bar_top"
@@ -145,12 +155,12 @@
     <org.thoughtcrime.securesms.components.emoji.EmojiTextView
         android:id="@+id/story_large_caption"
         android:layout_width="0dp"
-        android:layout_height="0dp"
+        android:layout_height="wrap_content"
         android:layout_marginStart="16dp"
         android:layout_marginTop="24dp"
         android:layout_marginEnd="16dp"
         android:layout_marginBottom="24dp"
-        android:gravity="bottom"
+        android:scrollbars="vertical"
         android:textAppearance="@style/Signal.Text.Body"
         android:visibility="gone"
         app:layout_constrainedHeight="true"
@@ -243,7 +253,7 @@
         android:maxLines="1"
         android:textAppearance="@style/Signal.Text.MaterialCaption"
         android:visibility="gone"
-        app:drawableStartCompat="@drawable/ic_lock_16"
+        app:drawableStartCompat="@drawable/ic_stories_16"
         app:drawableTint="@color/transparent_white_80"
         app:layout_constraintBottom_toTopOf="@id/progress"
         app:layout_constraintEnd_toStartOf="@id/more"
@@ -285,14 +295,5 @@
         android:id="@+id/on_reaction_sent_view"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
-
-    <ViewStub
-        android:id="@+id/story_first_time_nav_stub"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:inflatedId="@+id/story_first_time_navigation_view"
-        android:layout="@layout/story_viewer_first_time_navigation_stub"
-        app:layout_constraintBottom_toBottomOf="@id/story_content_card_touch_interceptor"
-        app:layout_constraintTop_toTopOf="@id/story_content_card_touch_interceptor" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -49,7 +49,6 @@ import org.thoughtcrime.securesms.video.videoconverter.EncodingException;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -206,7 +205,7 @@ public final class AttachmentCompressionJob extends BaseJob {
       return attachment;
     }
 
-    try (NotificationController notification = GenericForegroundService.startForegroundTask(context, context.getString(R.string.AttachmentUploadJob_compressing_video_start))) {
+    try (NotificationController notification = ForegroundUtil.requireForegroundTask(context, context.getString(R.string.AttachmentUploadJob_compressing_video_start))) {
 
       notification.setIndeterminateProgress();
 
@@ -291,7 +290,7 @@ public final class AttachmentCompressionJob extends BaseJob {
           throw new UndeliverableMessageException("Failed to transcode and cannot skip due to editing", e);
         }
       }
-    } catch (IOException | MmsException e) {
+    } catch (GenericForegroundService.UnableToStartException | IOException | MmsException e) {
       throw new UndeliverableMessageException("Failed to transcode", e);
     }
     return attachment;

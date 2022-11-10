@@ -155,13 +155,13 @@
     <color name="media_keyboard_button_color">@color/core_grey_60</color>
 
     <color name="megaphone_background_color">@color/core_white</color>
-    <color name="megaphone_body_text_color">@color/core_grey_65</color>
+    <color name="megaphone_body_text_color">@color/signal_colorOnSurfaceVariant</color>
     <color name="megaphone_reactions_shade">@color/core_grey_02</color>
     <color name="megaphone_reactions_close_tint">@color/core_black</color>
 
     <color name="sticker_management_action_button_color">@color/core_grey_90</color>
 
-    <color name="tooltip_default_color">@color/core_white</color>
+    <color name="tooltip_default_color">@color/signal_colorSecondaryContainer</color>
 
     <color name="wallpaper_preview_background">@color/transparent_white_30</color>
     <color name="wallpaper_compose_background">@color/signal_colorTransparent4</color>
@@ -199,6 +199,8 @@
 
     <color name="notification_profile_moon_tint">#5151F6</color>
 
+    <color name="num_pad_key_background">#dce5f9</color>
+
     <color name="top_toast_background_color">@color/core_white</color>
 
     <color name="sent_gift_button_tint">@color/transparent_white_70</color>
@@ -208,7 +210,7 @@
     <color name="message_request_bar_background_normal">@color/signal_colorSurface2</color>
     <color name="message_request_bar_denyForeground_normal">@color/signal_colorError</color>
     <color name="message_request_bar_acceptForeground_normal">@color/signal_colorOnSecondaryContainer</color>
-    <color name="message_request_bar_container_background_wallpaper">@color/signal_colorTransparent4</color>
+    <color name="message_request_bar_container_background_wallpaper">@color/wallpaper_bubble_color</color>
     <color name="message_request_bar_background_wallpaper">@color/signal_colorNeutralVariant</color>
     <color name="message_request_bar_denyForeground_wallpaper">@color/signal_colorError</color>
     <color name="message_request_bar_acceptForeground_wallpaper">@color/signal_colorNeutralInverse</color>

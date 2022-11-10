@@ -2,6 +2,7 @@ package org.thoughtcrime.securesms.recipients.ui.bottomsheet;
 
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
@@ -33,6 +34,7 @@ import org.thoughtcrime.securesms.components.settings.conversation.preferences.B
 import org.thoughtcrime.securesms.contacts.avatars.FallbackContactPhoto;
 import org.thoughtcrime.securesms.contacts.avatars.FallbackPhoto80dp;
 import org.thoughtcrime.securesms.groups.GroupId;
+import org.thoughtcrime.securesms.keyvalue.SignalStore;
 import org.thoughtcrime.securesms.phonenumbers.PhoneNumberFormatter;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientExporter;
@@ -82,6 +84,7 @@ public final class RecipientBottomSheetDialogFragment extends BottomSheetDialogF
   private View                     buttonStrip;
   private View                     interactionsContainer;
   private BadgeImageView           badgeImageView;
+  private Callback                 callback;
 
   public static BottomSheetDialogFragment create(@NonNull RecipientId recipientId,
                                                  @Nullable GroupId groupId)
@@ -221,10 +224,16 @@ public final class RecipientBottomSheetDialogFragment extends BottomSheetDialogF
         unblockButton.setVisibility(View.GONE);
       }
 
+      boolean isAudioAvailable = (recipient.isRegistered() || SignalStore.misc().getSmsExportPhase().allowSmsFeatures()) &&
+                                 !recipient.isGroup() &&
+                                 !recipient.isBlocked() &&
+                                 !recipient.isSelf() &&
+                                 !recipient.isReleaseNotes();
+
       ButtonStripPreference.State  buttonStripState = new ButtonStripPreference.State(
           /* isMessageAvailable = */ !recipient.isBlocked() && !recipient.isSelf() && !recipient.isReleaseNotes(),
           /* isVideoAvailable   = */ !recipient.isBlocked() && !recipient.isSelf() && recipient.isRegistered(),
-          /* isAudioAvailable   = */ !recipient.isBlocked() && !recipient.isSelf() && !recipient.isReleaseNotes(),
+          /* isAudioAvailable   = */ isAudioAvailable,
           /* isMuteAvailable    = */ false,
           /* isSearchAvailable  = */ false,
           /* isAudioSecure      = */ recipient.isRegistered(),
@@ -334,6 +343,8 @@ public final class RecipientBottomSheetDialogFragment extends BottomSheetDialogF
       removeAdminButton.setEnabled(!busy);
       removeFromGroupButton.setEnabled(!busy);
     });
+
+    callback = getParentFragment() != null && getParentFragment() instanceof Callback ? (Callback) getParentFragment() : null;
   }
 
   private void openSystemContactSheet(@NonNull Intent intent) {
@@ -355,5 +366,17 @@ public final class RecipientBottomSheetDialogFragment extends BottomSheetDialogF
   @Override
   public void show(@NonNull FragmentManager manager, @Nullable String tag) {
     BottomSheetUtil.show(manager, tag, this);
+  }
+
+  @Override
+  public void onDismiss(@NonNull DialogInterface dialog) {
+    super.onDismiss(dialog);
+    if (callback != null) {
+      callback.onRecipientBottomSheetDismissed();
+    }
+  }
+
+  public interface Callback {
+    void onRecipientBottomSheetDismissed();
   }
 }

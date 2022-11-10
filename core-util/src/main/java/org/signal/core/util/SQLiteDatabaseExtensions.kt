@@ -35,10 +35,26 @@ fun SupportSQLiteDatabase.getTableRowCount(table: String): Int {
 }
 
 /**
+ * Checks if a row exists that matches the query.
+ */
+fun SupportSQLiteDatabase.exists(table: String, query: String, vararg args: Any): Boolean {
+  return this.query("SELECT EXISTS(SELECT 1 FROM $table WHERE $query)", SqlUtil.buildArgs(*args)).use { cursor ->
+    cursor.moveToFirst() && cursor.getInt(0) == 1
+  }
+}
+
+/**
  * Begins a SELECT statement with a helpful builder pattern.
  */
 fun SupportSQLiteDatabase.select(vararg columns: String): SelectBuilderPart1 {
   return SelectBuilderPart1(this, arrayOf(*columns))
+}
+
+/**
+ * Begins a COUNT statement with a helpful builder pattern.
+ */
+fun SupportSQLiteDatabase.count(): SelectBuilderPart1 {
+  return SelectBuilderPart1(this, SqlUtil.COUNT)
 }
 
 /**
@@ -213,6 +229,7 @@ class UpdateBuilderPart3(
   private val where: String,
   private val whereArgs: Array<String>
 ) {
+  @JvmOverloads
   fun run(conflictStrategy: Int = SQLiteDatabase.CONFLICT_NONE): Int {
     return db.update(tableName, conflictStrategy, values, where, whereArgs)
   }

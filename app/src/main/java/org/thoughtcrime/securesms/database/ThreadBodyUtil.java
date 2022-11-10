@@ -50,6 +50,12 @@ public final class ThreadBodyUtil {
       return format(context, record, emoji, R.string.ThreadRecord_sticker);
     } else if (MessageRecordUtil.hasGiftBadge(record)) {
       return String.format("%s %s", EmojiStrings.GIFT, getGiftSummary(context, record));
+    } else if (MessageRecordUtil.isStoryReaction(record)) {
+      return getStoryReactionSummary(context, record);
+    } else if (MessageRecordUtil.isPaymentActivationRequest(record)) {
+      return String.format("%s %s", EmojiStrings.CARD, getPaymentActivationRequestSummary(context, record));
+    } else if (MessageRecordUtil.isPaymentsActivated(record)) {
+      return String.format("%s %s", EmojiStrings.CARD, getPaymentActivatedSummary(context, record));
     }
 
     boolean hasImage = false;
@@ -82,6 +88,30 @@ public final class ThreadBodyUtil {
       return context.getString(R.string.ThreadRecord__you_redeemed_a_gift_badge);
     } else {
       return context.getString(R.string.ThreadRecord__you_received_a_gift);
+    }
+  }
+
+  private static @NonNull String getStoryReactionSummary(@NonNull Context context, @NonNull MessageRecord messageRecord) {
+    if (messageRecord.isOutgoing()) {
+      return context.getString(R.string.ThreadRecord__reacted_s_to_their_story, messageRecord.getDisplayBody(context));
+    } else {
+      return context.getString(R.string.ThreadRecord__reacted_s_to_your_story, messageRecord.getDisplayBody(context));
+    }
+  }
+
+  private static @NonNull String getPaymentActivationRequestSummary(@NonNull Context context, @NonNull MessageRecord messageRecord) {
+    if (messageRecord.isOutgoing()) {
+      return context.getString(R.string.ThreadRecord_you_sent_request);
+    } else {
+      return context.getString(R.string.ThreadRecord_wants_you_to_activate_payments, messageRecord.getRecipient().getShortDisplayName(context));
+    }
+  }
+
+  private static @NonNull String getPaymentActivatedSummary(@NonNull Context context, @NonNull MessageRecord messageRecord) {
+    if (messageRecord.isOutgoing()) {
+      return context.getString(R.string.ThreadRecord_you_activated_payments);
+    } else {
+      return context.getString(R.string.ThreadRecord_can_accept_payments, messageRecord.getRecipient().getShortDisplayName(context));
     }
   }
   

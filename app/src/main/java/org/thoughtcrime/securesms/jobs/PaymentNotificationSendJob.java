@@ -107,10 +107,14 @@ public final class PaymentNotificationSendJob extends BaseJob {
     }
 
     SignalServiceDataMessage dataMessage = SignalServiceDataMessage.newBuilder()
-                                                                   .withPayment(new SignalServiceDataMessage.Payment(new SignalServiceDataMessage.PaymentNotification(payment.getReceipt(), payment.getNote())))
+                                                                   .withPayment(new SignalServiceDataMessage.Payment(new SignalServiceDataMessage.PaymentNotification(payment.getReceipt(), payment.getNote()), null))
                                                                    .build();
 
-    SendMessageResult sendMessageResult = messageSender.sendDataMessage(address, unidentifiedAccess, ContentHint.DEFAULT, dataMessage, IndividualSendEvents.EMPTY);
+    SendMessageResult sendMessageResult = messageSender.sendDataMessage(address, unidentifiedAccess, ContentHint.DEFAULT, dataMessage, IndividualSendEvents.EMPTY, false, recipient.needsPniSignature());
+
+    if (recipient.needsPniSignature()) {
+      SignalDatabase.pendingPniSignatureMessages().insertIfNecessary(recipientId, dataMessage.getTimestamp(), sendMessageResult);
+    }
 
     if (sendMessageResult.getIdentityFailure() != null) {
       Log.w(TAG, "Identity failure for " + recipient.getId());

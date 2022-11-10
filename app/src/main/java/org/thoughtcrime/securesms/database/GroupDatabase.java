@@ -14,6 +14,7 @@ import com.annimon.stream.Stream;
 import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.signal.core.util.CursorUtil;
+import org.signal.core.util.SQLiteDatabaseExtensionsKt;
 import org.signal.core.util.SetUtil;
 import org.signal.core.util.SqlUtil;
 import org.signal.core.util.logging.Log;
@@ -24,6 +25,8 @@ import org.signal.storageservice.protos.groups.Member;
 import org.signal.storageservice.protos.groups.local.DecryptedGroup;
 import org.signal.storageservice.protos.groups.local.DecryptedGroupChange;
 import org.signal.storageservice.protos.groups.local.EnabledState;
+import org.thoughtcrime.securesms.contacts.paged.ContactSearchSortOrder;
+import org.thoughtcrime.securesms.contacts.paged.collections.ContactSearchIterator;
 import org.thoughtcrime.securesms.crypto.SenderKeyUtil;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
 import org.thoughtcrime.securesms.groups.BadGroupIdException;
@@ -51,6 +54,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
@@ -61,28 +65,32 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-public class GroupDatabase extends Database {
+public class GroupDatabase extends Database implements RecipientIdDatabaseReference {
 
   private static final String TAG = Log.tag(GroupDatabase.class);
 
-          static final String TABLE_NAME            = "groups";
-  private static final String ID                    = "_id";
-          static final String GROUP_ID              = "group_id";
-  public  static final String RECIPIENT_ID          = "recipient_id";
-  private static final String TITLE                 = "title";
-          static final String MEMBERS               = "members";
-  private static final String AVATAR_ID             = "avatar_id";
-  private static final String AVATAR_KEY            = "avatar_key";
-  private static final String AVATAR_CONTENT_TYPE   = "avatar_content_type";
-  private static final String AVATAR_RELAY          = "avatar_relay";
-  private static final String AVATAR_DIGEST         = "avatar_digest";
-  private static final String TIMESTAMP             = "timestamp";
-          static final String ACTIVE                = "active";
-          static final String MMS                   = "mms";
-  private static final String EXPECTED_V2_ID        = "expected_v2_id";
-  private static final String UNMIGRATED_V1_MEMBERS = "former_v1_members";
-  private static final String DISTRIBUTION_ID       = "distribution_id";
-  private static final String DISPLAY_AS_STORY      = "display_as_story";
+          static final String TABLE_NAME                  = "groups";
+  private static final String ID                          = "_id";
+          static final String GROUP_ID                    = "group_id";
+  public  static final String RECIPIENT_ID                = "recipient_id";
+  private static final String TITLE                       = "title";
+          static final String MEMBERS                     = "members";
+  private static final String AVATAR_ID                   = "avatar_id";
+  private static final String AVATAR_KEY                  = "avatar_key";
+  private static final String AVATAR_CONTENT_TYPE         = "avatar_content_type";
+  private static final String AVATAR_RELAY                = "avatar_relay";
+  private static final String AVATAR_DIGEST               = "avatar_digest";
+  private static final String TIMESTAMP                   = "timestamp";
+          static final String ACTIVE                      = "active";
+          static final String MMS                         = "mms";
+  private static final String EXPECTED_V2_ID              = "expected_v2_id";
+  private static final String UNMIGRATED_V1_MEMBERS       = "former_v1_members";
+  private static final String DISTRIBUTION_ID             = "distribution_id";
+  private static final String SHOW_AS_STORY_STATE         = "display_as_story";
+  private static final String LAST_FORCE_UPDATE_TIMESTAMP = "last_force_update_timestamp";
+
+  /** Was temporarily used for PNP accept by pni but is no longer needed/updated */
+  @Deprecated
   private static final String AUTH_SERVICE_ID       = "auth_service_id";
 
 
@@ -94,27 +102,28 @@ public class GroupDatabase extends Database {
   /** Serialized {@link DecryptedGroup} protobuf */
   public  static final String V2_DECRYPTED_GROUP  = "decrypted_group";
 
-  public static final String CREATE_TABLE = "CREATE TABLE " + TABLE_NAME + " (" + ID                    + " INTEGER PRIMARY KEY, " +
-                                                                                  GROUP_ID              + " TEXT, " +
-                                                                                  RECIPIENT_ID          + " INTEGER, " +
-                                                                                  TITLE                 + " TEXT, " +
-                                                                                  MEMBERS               + " TEXT, " +
-                                                                                  AVATAR_ID             + " INTEGER, " +
-                                                                                  AVATAR_KEY            + " BLOB, " +
-                                                                                  AVATAR_CONTENT_TYPE   + " TEXT, " +
-                                                                                  AVATAR_RELAY          + " TEXT, " +
-                                                                                  TIMESTAMP             + " INTEGER, " +
-                                                                                  ACTIVE                + " INTEGER DEFAULT 1, " +
-                                                                                  AVATAR_DIGEST         + " BLOB, " +
-                                                                                  MMS                   + " INTEGER DEFAULT 0, " +
-                                                                                  V2_MASTER_KEY         + " BLOB, " +
-                                                                                  V2_REVISION           + " BLOB, " +
-                                                                                  V2_DECRYPTED_GROUP    + " BLOB, " +
-                                                                                  EXPECTED_V2_ID        + " TEXT DEFAULT NULL, " +
-                                                                                  UNMIGRATED_V1_MEMBERS + " TEXT DEFAULT NULL, " +
-                                                                                  DISTRIBUTION_ID       + " TEXT DEFAULT NULL, " +
-                                                                                  DISPLAY_AS_STORY      + " INTEGER DEFAULT 0, " +
-                                                                                  AUTH_SERVICE_ID       + " TEXT DEFAULT NULL);";
+  public static final String CREATE_TABLE = "CREATE TABLE " + TABLE_NAME + " (" + ID                          + " INTEGER PRIMARY KEY, " +
+                                                                                  GROUP_ID                    + " TEXT, " +
+                                                                                  RECIPIENT_ID                + " INTEGER, " +
+                                                                                  TITLE                       + " TEXT, " +
+                                                                                  MEMBERS                     + " TEXT, " +
+                                                                                  AVATAR_ID                   + " INTEGER, " +
+                                                                                  AVATAR_KEY                  + " BLOB, " +
+                                                                                  AVATAR_CONTENT_TYPE         + " TEXT, " +
+                                                                                  AVATAR_RELAY                + " TEXT, " +
+                                                                                  TIMESTAMP                   + " INTEGER, " +
+                                                                                  ACTIVE                      + " INTEGER DEFAULT 1, " +
+                                                                                  AVATAR_DIGEST               + " BLOB, " +
+                                                                                  MMS                         + " INTEGER DEFAULT 0, " +
+                                                                                  V2_MASTER_KEY               + " BLOB, " +
+                                                                                  V2_REVISION                 + " BLOB, " +
+                                                                                  V2_DECRYPTED_GROUP          + " BLOB, " +
+                                                                                  EXPECTED_V2_ID              + " TEXT DEFAULT NULL, " +
+                                                                                  UNMIGRATED_V1_MEMBERS       + " TEXT DEFAULT NULL, " +
+                                                                                  DISTRIBUTION_ID             + " TEXT DEFAULT NULL, " +
+                                                                                  SHOW_AS_STORY_STATE         + " INTEGER DEFAULT 0, " +
+                                                                                  AUTH_SERVICE_ID             + " TEXT DEFAULT NULL, " +
+                                                                                  LAST_FORCE_UPDATE_TIMESTAMP + " INTEGER DEFAULT 0);";
 
   public static final String[] CREATE_INDEXS = {
       "CREATE UNIQUE INDEX IF NOT EXISTS group_id_index ON " + TABLE_NAME + " (" + GROUP_ID + ");",
@@ -125,7 +134,7 @@ public class GroupDatabase extends Database {
 
   private static final String[] GROUP_PROJECTION = {
       GROUP_ID, RECIPIENT_ID, TITLE, MEMBERS, UNMIGRATED_V1_MEMBERS, AVATAR_ID, AVATAR_KEY, AVATAR_CONTENT_TYPE, AVATAR_RELAY, AVATAR_DIGEST,
-      TIMESTAMP, ACTIVE, MMS, V2_MASTER_KEY, V2_REVISION, V2_DECRYPTED_GROUP, AUTH_SERVICE_ID
+      TIMESTAMP, ACTIVE, MMS, V2_MASTER_KEY, V2_REVISION, V2_DECRYPTED_GROUP, LAST_FORCE_UPDATE_TIMESTAMP
   };
 
   static final List<String> TYPED_GROUP_PROJECTION = Stream.of(GROUP_PROJECTION).map(columnName -> TABLE_NAME + "." + columnName).toList();
@@ -211,6 +220,17 @@ public class GroupDatabase extends Database {
     }
   }
 
+  public void removeUnmigratedV1Members(@NonNull GroupId.V2 id) {
+    Optional<GroupRecord> group = getGroup(id);
+
+    if (!group.isPresent()) {
+      Log.w(TAG, "Couldn't find the group!", new Throwable());
+      return;
+    }
+
+    removeUnmigratedV1Members(id, group.get().getUnmigratedV1Members());
+  }
+
   /**
    * Removes the specified members from the list of 'unmigrated V1 members' -- the list of members
    * that were either dropped or had to be invited when migrating the group from V1->V2.
@@ -231,7 +251,7 @@ public class GroupDatabase extends Database {
 
     databaseHelper.getSignalWritableDatabase().update(TABLE_NAME, values, GROUP_ID + " = ?", SqlUtil.buildArgs(id));
 
-    Recipient.live(Recipient.externalGroupExact(context, id).getId()).refresh();
+    Recipient.live(Recipient.externalGroupExact(id).getId()).refresh();
   }
 
   Optional<GroupRecord> getGroup(Cursor cursor) {
@@ -284,6 +304,70 @@ public class GroupDatabase extends Database {
   }
 
   public Reader queryGroupsByTitle(String inputQuery, boolean includeInactive, boolean excludeV1, boolean excludeMms) {
+    SqlUtil.Query query  = getGroupQueryWhereStatement(inputQuery, includeInactive, excludeV1, excludeMms);
+    Cursor        cursor = databaseHelper.getSignalReadableDatabase().query(TABLE_NAME, null, query.getWhere(), query.getWhereArgs(), null, null, TITLE + " COLLATE NOCASE ASC");
+
+    return new Reader(cursor);
+  }
+
+  public Reader queryGroupsByMembership(@NonNull Set<RecipientId> recipientIds, boolean includeInactive, boolean excludeV1, boolean excludeMms) {
+    if (recipientIds.isEmpty()) {
+      return new Reader(null);
+    }
+
+    if (recipientIds.size() > 30) {
+      Log.w(TAG, "[queryGroupsByMembership] Large set of recipientIds (" + recipientIds.size() + ")! Using the first 30.");
+      recipientIds = recipientIds.stream().limit(30).collect(Collectors.toSet());
+    }
+
+    List<String> recipientLikeClauses = recipientIds.stream()
+                                                    .map(RecipientId::toLong)
+                                                    .map(id -> "(" + MEMBERS + " LIKE " + id + " || ',%' OR " + MEMBERS + " LIKE '%,' || " + id + " || ',%' OR " + MEMBERS + " LIKE '%,' || " + id + ")")
+                                                    .collect(Collectors.toList());
+
+    String   query;
+    String[] queryArgs;
+
+    String membershipQuery = "(" + Util.join(recipientLikeClauses, " OR ") + ")";
+
+    if (includeInactive) {
+      query     = membershipQuery + " AND (" + ACTIVE + " = ? OR " + RECIPIENT_ID + " IN (SELECT " + ThreadDatabase.RECIPIENT_ID + " FROM " + ThreadDatabase.TABLE_NAME + "))";
+      queryArgs = SqlUtil.buildArgs(1);
+    } else {
+      query     = membershipQuery + " AND " + ACTIVE + " = ?";
+      queryArgs = SqlUtil.buildArgs(1);
+    }
+
+    if (excludeV1) {
+      query += " AND " + EXPECTED_V2_ID + " IS NULL";
+    }
+
+    if (excludeMms) {
+      query += " AND " + MMS + " = 0";
+    }
+
+    return new Reader(getReadableDatabase().query(TABLE_NAME, null, query, queryArgs, null, null, null));
+  }
+
+  public Reader queryGroupsByRecency(@NonNull GroupQuery groupQuery) {
+    SqlUtil.Query query = getGroupQueryWhereStatement(groupQuery.searchQuery, groupQuery.includeInactive, !groupQuery.includeV1, !groupQuery.includeMms);
+    String sql = "SELECT * FROM " + TABLE_NAME +
+                 " LEFT JOIN " + ThreadDatabase.TABLE_NAME + " ON " + RECIPIENT_ID + " = " + ThreadDatabase.TABLE_NAME + "." + ThreadDatabase.RECIPIENT_ID +
+                 " WHERE " + query.getWhere() +
+                 " ORDER BY " + ThreadDatabase.TABLE_NAME + "." + ThreadDatabase.DATE + " DESC";
+
+    return new Reader(databaseHelper.getSignalReadableDatabase().rawQuery(sql, query.getWhereArgs()));
+  }
+
+  public Reader queryGroups(@NonNull GroupQuery groupQuery) {
+    if (groupQuery.sortOrder == ContactSearchSortOrder.NATURAL) {
+      return queryGroupsByTitle(groupQuery.searchQuery, groupQuery.includeInactive, !groupQuery.includeV1, !groupQuery.includeMms);
+    } else {
+      return queryGroupsByRecency(groupQuery);
+    }
+  }
+
+  private @NonNull SqlUtil.Query getGroupQueryWhereStatement(String inputQuery, boolean includeInactive, boolean excludeV1, boolean excludeMms) {
     String   query;
     String[] queryArgs;
 
@@ -305,9 +389,7 @@ public class GroupDatabase extends Database {
       query += " AND " + MMS + " = 0";
     }
 
-    Cursor cursor = databaseHelper.getSignalReadableDatabase().query(TABLE_NAME, null, query, queryArgs, null, null, TITLE + " COLLATE NOCASE ASC");
-
-    return new Reader(cursor);
+    return new SqlUtil.Query(query, queryArgs);
   }
 
   public @NonNull DistributionId getOrCreateDistributionId(@NonNull GroupId.V2 groupId) {
@@ -477,25 +559,23 @@ public class GroupDatabase extends Database {
     if (groupExists(groupId.deriveV2MigrationGroupId())) {
       throw new LegacyGroupInsertException(groupId);
     }
-    create(null, groupId, title, members, avatar, relay, null, null);
+    create(groupId, title, members, avatar, relay, null, null);
   }
 
   public void create(@NonNull GroupId.Mms groupId,
                      @Nullable String title,
                      @NonNull Collection<RecipientId> members)
   {
-    create(null, groupId, Util.isEmpty(title) ? null : title, members, null, null, null, null);
+    create(groupId, Util.isEmpty(title) ? null : title, members, null, null, null, null);
   }
 
-  public GroupId.V2 create(@Nullable ServiceId authServiceId,
-                           @NonNull GroupMasterKey groupMasterKey,
+  public GroupId.V2 create(@NonNull GroupMasterKey groupMasterKey,
                            @NonNull DecryptedGroup groupState)
   {
-    return create(authServiceId, groupMasterKey, groupState, false);
+    return create(groupMasterKey, groupState, false);
   }
 
-  public GroupId.V2 create(@Nullable ServiceId authServiceId,
-                           @NonNull GroupMasterKey groupMasterKey,
+  public GroupId.V2 create(@NonNull GroupMasterKey groupMasterKey,
                            @NonNull DecryptedGroup groupState,
                            boolean force)
   {
@@ -507,7 +587,7 @@ public class GroupDatabase extends Database {
       Log.w(TAG, "Forcing the creation of a group even though we already have a V1 ID!");
     }
 
-    create(authServiceId, groupId, groupState.getTitle(), Collections.emptyList(), null, null, groupMasterKey, groupState);
+    create(groupId, groupState.getTitle(), Collections.emptyList(), null, null, groupMasterKey, groupState);
 
     return groupId;
   }
@@ -537,8 +617,8 @@ public class GroupDatabase extends Database {
 
       if (updated < 1) {
         Log.w(TAG, "No group entry. Creating restore placeholder for " + groupId);
-        create(authServiceId,
-               groupMasterKey,
+        create(
+            groupMasterKey,
                DecryptedGroup.newBuilder()
                              .setRevision(GroupsV2StateProcessor.RESTORE_PLACEHOLDER_REVISION)
                              .build(),
@@ -559,8 +639,7 @@ public class GroupDatabase extends Database {
   /**
    * @param groupMasterKey null for V1, must be non-null for V2 (presence dictates group version).
    */
-  private void create(@Nullable ServiceId authServiceId,
-                      @NonNull GroupId groupId,
+  private void create(@NonNull GroupId groupId,
                       @Nullable String title,
                       @NonNull Collection<RecipientId> memberCollection,
                       @Nullable SignalServiceAttachmentPointer avatar,
@@ -575,7 +654,6 @@ public class GroupDatabase extends Database {
     Collections.sort(members);
 
     ContentValues contentValues = new ContentValues();
-    contentValues.put(AUTH_SERVICE_ID, authServiceId != null ? authServiceId.toString() : null);
     contentValues.put(RECIPIENT_ID, groupRecipientId.serialize());
     contentValues.put(GROUP_ID, groupId.toString());
     contentValues.put(TITLE, title);
@@ -890,6 +968,12 @@ public class GroupDatabase extends Database {
     database.update(TABLE_NAME, values, GROUP_ID + " = ?", new String[] {groupId.toString()});
   }
 
+  public void setLastForceUpdateTimestamp(@NonNull GroupId groupId, long timestamp) {
+    ContentValues values = new ContentValues();
+    values.put(LAST_FORCE_UPDATE_TIMESTAMP, timestamp);
+    getWritableDatabase().update(TABLE_NAME, values, GROUP_ID + " = ?", SqlUtil.buildArgs(groupId));
+  }
+
   @WorkerThread
   public boolean isCurrentMember(@NonNull GroupId.Push groupId, @NonNull RecipientId recipientId) {
     SQLiteDatabase database = databaseHelper.getSignalReadableDatabase();
@@ -915,7 +999,7 @@ public class GroupDatabase extends Database {
       if (UuidUtil.UNKNOWN_UUID.equals(uuid)) {
         Log.w(TAG, "Seen unknown UUID in members list");
       } else {
-        RecipientId           id       = RecipientId.from(ServiceId.from(uuid), null);
+        RecipientId           id       = RecipientId.from(ServiceId.from(uuid));
         Optional<RecipientId> remapped = RemappedRecords.getInstance().getRecipient(id);
 
         if (remapped.isPresent()) {
@@ -987,14 +1071,25 @@ public class GroupDatabase extends Database {
     return result;
   }
 
-  public void setAuthServiceId(@Nullable ServiceId authServiceId, @NonNull GroupId groupId) {
-    ContentValues values = new ContentValues(1);
-    values.put(AUTH_SERVICE_ID, authServiceId == null ? null : authServiceId.toString());
+  @Override
+  public void remapRecipient(@NonNull RecipientId fromId, @NonNull RecipientId toId) {
+    for (GroupRecord group : getGroupsContainingMember(fromId, false, true)) {
+      Set<RecipientId> newMembers = new LinkedHashSet<>(group.getMembers());
+      newMembers.remove(fromId);
+      newMembers.add(toId);
 
-    getWritableDatabase().update(TABLE_NAME, values, GROUP_ID + " = ?", SqlUtil.buildArgs(groupId));
+      ContentValues groupValues = new ContentValues();
+      groupValues.put(GroupDatabase.MEMBERS, RecipientId.toSerializedList(newMembers));
+
+      getWritableDatabase().update(GroupDatabase.TABLE_NAME, groupValues, GroupDatabase.RECIPIENT_ID + " = ?", SqlUtil.buildArgs(group.recipientId));
+
+      if (group.isV2Group()) {
+        removeUnmigratedV1Members(group.id.requireV2(), Collections.singletonList(fromId));
+      }
+    }
   }
 
-  public static class Reader implements Closeable {
+  public static class Reader implements Closeable, ContactSearchIterator<GroupRecord> {
 
     public final Cursor cursor;
 
@@ -1039,13 +1134,28 @@ public class GroupDatabase extends Database {
                              CursorUtil.requireInt(cursor, V2_REVISION),
                              CursorUtil.requireBlob(cursor, V2_DECRYPTED_GROUP),
                              CursorUtil.getString(cursor, DISTRIBUTION_ID).map(DistributionId::from).orElse(null),
-                             CursorUtil.requireString(cursor, AUTH_SERVICE_ID));
+                             CursorUtil.requireLong(cursor, LAST_FORCE_UPDATE_TIMESTAMP));
     }
 
     @Override
     public void close() {
       if (this.cursor != null)
         this.cursor.close();
+    }
+
+    @Override
+    public void moveToPosition(int n) {
+      cursor.moveToPosition(n);
+    }
+
+    @Override
+    public boolean hasNext() {
+      return !cursor.isLast() && !cursor.isAfterLast();
+    }
+
+    @Override
+    public GroupRecord next() {
+      return getNext();
     }
   }
 
@@ -1065,7 +1175,7 @@ public class GroupDatabase extends Database {
               private final boolean           mms;
     @Nullable private final V2GroupProperties v2GroupProperties;
               private final DistributionId    distributionId;
-    @Nullable private final String            authServiceId;
+              private final long              lastForceUpdateTimestamp;
 
     public GroupRecord(@NonNull GroupId id,
                        @NonNull RecipientId recipientId,
@@ -1083,20 +1193,20 @@ public class GroupDatabase extends Database {
                        int groupRevision,
                        @Nullable byte[] decryptedGroupBytes,
                        @Nullable DistributionId distributionId,
-                       @Nullable String authServiceId)
+                       long lastForceUpdateTimestamp)
     {
-      this.id                = id;
-      this.recipientId       = recipientId;
-      this.title             = title;
-      this.avatarId          = avatarId;
-      this.avatarKey         = avatarKey;
-      this.avatarDigest      = avatarDigest;
-      this.avatarContentType = avatarContentType;
-      this.relay             = relay;
-      this.active            = active;
-      this.mms               = mms;
-      this.distributionId    = distributionId;
-      this.authServiceId     = authServiceId;
+      this.id                       = id;
+      this.recipientId              = recipientId;
+      this.title                    = title;
+      this.avatarId                 = avatarId;
+      this.avatarKey                = avatarKey;
+      this.avatarDigest             = avatarDigest;
+      this.avatarContentType        = avatarContentType;
+      this.relay                    = relay;
+      this.active                   = active;
+      this.mms                      = mms;
+      this.distributionId           = distributionId;
+      this.lastForceUpdateTimestamp = lastForceUpdateTimestamp;
 
       V2GroupProperties v2GroupProperties = null;
       if (groupMasterKeyBytes != null && decryptedGroupBytes != null) {
@@ -1205,6 +1315,10 @@ public class GroupDatabase extends Database {
       return distributionId;
     }
 
+    public long getLastForceUpdateTimestamp() {
+      return lastForceUpdateTimestamp;
+    }
+
     public boolean isV1Group() {
       return !mms && !isV2Group();
     }
@@ -1284,10 +1398,6 @@ public class GroupDatabase extends Database {
         }
       }
       return false;
-    }
-
-    public @Nullable ServiceId getAuthServiceId() {
-      return ServiceId.parseOrNull(authServiceId);
     }
   }
 
@@ -1373,7 +1483,7 @@ public class GroupDatabase extends Database {
         if (UuidUtil.UNKNOWN_UUID.equals(uuid)) {
           unknownMembers++;
         } else if (includeSelf || !selfUuid.equals(uuid)) {
-          recipients.add(RecipientId.from(ServiceId.from(uuid), null));
+          recipients.add(RecipientId.from(ServiceId.from(uuid)));
         }
       }
       if (memberSet.includePending) {
@@ -1381,7 +1491,7 @@ public class GroupDatabase extends Database {
           if (UuidUtil.UNKNOWN_UUID.equals(uuid)) {
             unknownPending++;
           } else if (includeSelf || !selfUuid.equals(uuid)) {
-            recipients.add(RecipientId.from(ServiceId.from(uuid), null));
+            recipients.add(RecipientId.from(ServiceId.from(uuid)));
           }
         }
       }
@@ -1399,11 +1509,20 @@ public class GroupDatabase extends Database {
   }
 
   public @NonNull List<GroupId> getGroupsToDisplayAsStories() throws BadGroupIdException {
-    String[] selection = SqlUtil.buildArgs(GROUP_ID);
-    String   where     = DISPLAY_AS_STORY + " = ? AND " + ACTIVE + " = ?";
-    String[] whereArgs = SqlUtil.buildArgs(1, 1);
+    String query = "SELECT " + GROUP_ID + ", (" +
+                    "SELECT " + MmsDatabase.TABLE_NAME + "." + MmsDatabase.DATE_RECEIVED + " FROM " + MmsDatabase.TABLE_NAME +
+                      " WHERE " + MmsDatabase.TABLE_NAME + "." + MmsDatabase.RECIPIENT_ID + " = " + ThreadDatabase.TABLE_NAME + "." + ThreadDatabase.RECIPIENT_ID +
+                      " AND " + MmsDatabase.STORY_TYPE + " > 1 ORDER BY " + MmsDatabase.TABLE_NAME + "." + MmsDatabase.DATE_RECEIVED + " DESC LIMIT 1" +
+                    ") as active_timestamp" +
+                   " FROM " + TABLE_NAME +
+                   " INNER JOIN " + ThreadDatabase.TABLE_NAME + " ON " + ThreadDatabase.TABLE_NAME + "." + ThreadDatabase.RECIPIENT_ID + " = " + TABLE_NAME + "." + RECIPIENT_ID +
+                   " WHERE " + ACTIVE + " = 1 " +
+                   " AND (" +
+                    SHOW_AS_STORY_STATE + " = " + ShowAsStoryState.ALWAYS.code +
+                    " OR (" + SHOW_AS_STORY_STATE + " = " + ShowAsStoryState.IF_ACTIVE.code + " AND active_timestamp IS NOT NULL)" +
+                   ") ORDER BY active_timestamp DESC";
 
-    try (Cursor cursor = getReadableDatabase().query(TABLE_NAME, selection, where, whereArgs, null, null, null, null)) {
+    try (Cursor cursor = getReadableDatabase().query(query)) {
       if (cursor == null || cursor.getCount() == 0) {
         return Collections.emptyList();
       }
@@ -1417,15 +1536,41 @@ public class GroupDatabase extends Database {
     }
   }
 
-  public void markDisplayAsStory(@NonNull GroupId groupId) {
-    markDisplayAsStory(groupId, true);
+  public @NonNull ShowAsStoryState getShowAsStoryState(@NonNull GroupId groupId) {
+    String[] projection = SqlUtil.buildArgs(SHOW_AS_STORY_STATE);
+    String   where      = GROUP_ID + " = ?";
+    String[] whereArgs  = SqlUtil.buildArgs(groupId.toString());
+
+    try (Cursor cursor = getReadableDatabase().query(TABLE_NAME, projection, where, whereArgs, null, null, null)) {
+      if (!cursor.moveToFirst()) {
+        throw new AssertionError("Group does not exist.");
+      }
+
+      int serializedState = CursorUtil.requireInt(cursor, SHOW_AS_STORY_STATE);
+      return ShowAsStoryState.deserialize(serializedState);
+    }
   }
 
-  public void markDisplayAsStory(@NonNull GroupId groupId, boolean displayAsStory) {
+  public void setShowAsStoryState(@NonNull GroupId groupId, @NonNull ShowAsStoryState showAsStoryState) {
     ContentValues contentValues = new ContentValues(1);
-    contentValues.put(DISPLAY_AS_STORY, displayAsStory);
+    contentValues.put(SHOW_AS_STORY_STATE, showAsStoryState.code);
 
     getWritableDatabase().update(TABLE_NAME, contentValues, GROUP_ID + " = ?", SqlUtil.buildArgs(groupId.toString()));
+  }
+
+  public void setShowAsStoryState(@NonNull Collection<RecipientId> recipientIds, @NonNull ShowAsStoryState showAsStoryState) {
+    ContentValues       contentValues = new ContentValues(1);
+    List<SqlUtil.Query> queries       = SqlUtil.buildCollectionQuery(RECIPIENT_ID, recipientIds);
+
+    contentValues.put(SHOW_AS_STORY_STATE, showAsStoryState.code);
+
+    SQLiteDatabaseExtensionsKt.withinTransaction(getWritableDatabase(), db -> {
+        for (SqlUtil.Query query : queries) {
+          db.update(TABLE_NAME, contentValues, query.getWhere(), query.getWhereArgs());
+        }
+
+        return null;
+    });
   }
 
   public enum MemberSet {
@@ -1440,6 +1585,45 @@ public class GroupDatabase extends Database {
     MemberSet(boolean includeSelf, boolean includePending) {
       this.includeSelf    = includeSelf;
       this.includePending = includePending;
+    }
+  }
+
+  /**
+   * State object describing whether or not to display a story in a list.
+   */
+  public enum ShowAsStoryState {
+    /**
+     * The default value. Display the group as a story if the group has stories in it currently.
+     */
+    IF_ACTIVE(0),
+    /**
+     * Always display the group as a story unless explicitly removed. This state is entered if the
+     * user sends a story to a group or otherwise explicitly selects it to appear.
+     */
+    ALWAYS(1),
+    /**
+     * Never display the story as a group. This state is entered if the user removes the group from
+     * their list, and is only navigated away from if the user explicitly adds the group again.
+     */
+    NEVER(2);
+
+    private final int code;
+
+    ShowAsStoryState(int code) {
+      this.code = code;
+    }
+
+    private static @NonNull ShowAsStoryState deserialize(int code) {
+      switch (code) {
+        case 0:
+          return IF_ACTIVE;
+        case 1:
+          return ALWAYS;
+        case 2:
+          return NEVER;
+        default:
+          throw new IllegalArgumentException("Unknown code: " + code);
+      }
     }
   }
 
@@ -1458,6 +1642,59 @@ public class GroupDatabase extends Database {
 
     public boolean isInGroup() {
       return inGroup;
+    }
+  }
+
+  public static class GroupQuery {
+    private final String  searchQuery;
+    private final boolean includeInactive;
+    private final boolean                includeV1;
+    private final boolean                includeMms;
+    private final ContactSearchSortOrder sortOrder;
+
+    private GroupQuery(@NonNull Builder builder) {
+      this.searchQuery     = builder.searchQuery;
+      this.includeInactive = builder.includeInactive;
+      this.includeV1       = builder.includeV1;
+      this.includeMms      = builder.includeMms;
+      this.sortOrder       = builder.sortOrder;
+    }
+
+    public static class Builder {
+      private String                 searchQuery     = "";
+      private boolean                includeInactive = false;
+      private boolean                includeV1       = false;
+      private boolean                includeMms      = false;
+      private ContactSearchSortOrder sortOrder       = ContactSearchSortOrder.NATURAL;
+
+      public @NonNull Builder withSearchQuery(@Nullable String query) {
+        this.searchQuery = TextUtils.isEmpty(query) ? "" : query;
+        return this;
+      }
+
+      public @NonNull Builder withInactiveGroups(boolean includeInactive) {
+        this.includeInactive = includeInactive;
+        return this;
+      }
+
+      public @NonNull Builder withV1Groups(boolean includeV1Groups) {
+        this.includeV1 = includeV1Groups;
+        return this;
+      }
+
+      public @NonNull Builder withMmsGroups(boolean includeMmsGroups) {
+        this.includeMms = includeMmsGroups;
+        return this;
+      }
+
+      public @NonNull Builder withSortOrder(@NonNull ContactSearchSortOrder sortOrder) {
+        this.sortOrder = sortOrder;
+        return this;
+      }
+
+      public GroupQuery build() {
+        return new GroupQuery(this);
+      }
     }
   }
 

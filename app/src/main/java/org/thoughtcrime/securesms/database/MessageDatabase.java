@@ -12,6 +12,10 @@ import com.google.android.mms.pdu_alt.NotificationInd;
 
 import net.zetetic.database.sqlcipher.SQLiteStatement;
 
+import org.signal.core.util.CursorExtensionsKt;
+import org.signal.core.util.CursorUtil;
+import org.signal.core.util.SQLiteDatabaseExtensionsKt;
+import org.signal.core.util.SqlUtil;
 import org.signal.core.util.logging.Log;
 import org.signal.libsignal.protocol.IdentityKey;
 import org.signal.libsignal.protocol.util.Pair;
@@ -19,12 +23,16 @@ import org.thoughtcrime.securesms.database.documents.Document;
 import org.thoughtcrime.securesms.database.documents.IdentityKeyMismatch;
 import org.thoughtcrime.securesms.database.documents.IdentityKeyMismatchSet;
 import org.thoughtcrime.securesms.database.documents.NetworkFailure;
+import org.thoughtcrime.securesms.database.model.MessageExportStatus;
 import org.thoughtcrime.securesms.database.model.MessageId;
 import org.thoughtcrime.securesms.database.model.MessageRecord;
 import org.thoughtcrime.securesms.database.model.ParentStoryId;
 import org.thoughtcrime.securesms.database.model.SmsMessageRecord;
 import org.thoughtcrime.securesms.database.model.StoryResult;
+import org.thoughtcrime.securesms.database.model.StoryType;
 import org.thoughtcrime.securesms.database.model.StoryViewState;
+import org.thoughtcrime.securesms.database.model.databaseprotos.MessageExportState;
+import org.thoughtcrime.securesms.database.model.databaseprotos.ThreadMergeEvent;
 import org.thoughtcrime.securesms.groups.GroupMigrationMembershipChange;
 import org.thoughtcrime.securesms.insights.InsightsConstants;
 import org.thoughtcrime.securesms.mms.IncomingMediaMessage;
@@ -35,9 +43,7 @@ import org.thoughtcrime.securesms.recipients.RecipientId;
 import org.thoughtcrime.securesms.revealable.ViewOnceExpirationInfo;
 import org.thoughtcrime.securesms.sms.IncomingTextMessage;
 import org.thoughtcrime.securesms.sms.OutgoingTextMessage;
-import org.signal.core.util.CursorUtil;
 import org.thoughtcrime.securesms.util.JsonUtils;
-import org.signal.core.util.SqlUtil;
 import org.thoughtcrime.securesms.util.Util;
 
 import java.io.Closeable;
@@ -45,6 +51,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -53,7 +60,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
-public abstract class MessageDatabase extends Database implements MmsSmsColumns {
+public abstract class MessageDatabase extends Database implements MmsSmsColumns, RecipientIdDatabaseReference, ThreadIdDatabaseReference  {
 
   private static final String TAG = Log.tag(MessageDatabase.class);
 
@@ -78,6 +85,7 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
   public abstract int getMessageCountForThread(long threadId);
   public abstract int getMessageCountForThread(long threadId, long beforeTime);
   public abstract boolean hasMeaningfulMessage(long threadId);
+  public abstract int getIncomingMeaningfulMessageCountSince(long threadId, long afterTime);
   public abstract Optional<MmsNotificationInfo> getNotification(long messageId);
 
   public abstract Cursor getExpirationStartedMessages();
@@ -92,6 +100,9 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
   public abstract boolean isSent(long messageId);
   public abstract List<MessageRecord> getProfileChangeDetailsRecords(long threadId, long afterTimestamp);
   public abstract Set<Long> getAllRateLimitedMessageIds();
+  public abstract Cursor getUnexportedInsecureMessages(int limit);
+  public abstract long getUnexportedInsecureMessagesEstimatedSize();
+  public abstract void deleteExportedMessages();
 
   public abstract void markExpireStarted(long messageId);
   public abstract void markExpireStarted(long messageId, long startTime);
@@ -126,8 +137,8 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
   public abstract void markGiftRedemptionStarted(long messageId);
   public abstract void markGiftRedemptionFailed(long messageId);
 
-  public abstract Set<MessageUpdate> incrementReceiptCount(SyncMessageId messageId, long timestamp, @NonNull ReceiptType receiptType, boolean storiesOnly);
-  abstract @NonNull MmsSmsDatabase.TimestampReadResult setTimestampRead(SyncMessageId messageId, long proposedExpireStarted, @NonNull Map<Long, Long> threadToLatestRead);
+  public abstract Set<MessageUpdate> incrementReceiptCount(SyncMessageId messageId, long timestamp, @NonNull ReceiptType receiptType, @NonNull MessageQualifier messageType);
+
   public abstract List<MarkedMessageInfo> setEntireThreadRead(long threadId);
   public abstract List<MarkedMessageInfo> setMessagesReadSince(long threadId, long timestamp);
   public abstract List<MarkedMessageInfo> setAllMessagesRead();
@@ -169,6 +180,8 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
   public abstract void insertGroupV1MigrationEvents(@NonNull RecipientId recipientId, long threadId, @NonNull GroupMigrationMembershipChange membershipChange);
   public abstract void insertNumberChangeMessages(@NonNull Recipient recipient);
   public abstract void insertBoostRequestMessage(@NonNull RecipientId recipientId, long threadId);
+  public abstract void insertThreadMergeEvent(@NonNull RecipientId recipientId, long threadId, @NonNull ThreadMergeEvent event);
+  public abstract void insertSmsExportMessage(@NonNull RecipientId recipientId, long threadId);
 
   public abstract boolean deleteMessage(long messageId);
   abstract void deleteThread(long threadId);
@@ -189,24 +202,29 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
 
   public abstract boolean isStory(long messageId);
   public abstract @NonNull Reader getOutgoingStoriesTo(@NonNull RecipientId recipientId);
-  public abstract @NonNull Reader getAllOutgoingStories(boolean reverse);
+  public abstract @NonNull Reader getAllOutgoingStories(boolean reverse, int limit);
   public abstract @NonNull Reader getAllOutgoingStoriesAt(long sentTimestamp);
-  public abstract @NonNull List<StoryResult> getOrderedStoryRecipientsAndIds();
-  public abstract @NonNull Reader getAllStoriesFor(@NonNull RecipientId recipientId);
+  public abstract @NonNull List<MarkedMessageInfo> markAllIncomingStoriesRead();
+  public abstract @NonNull List<StoryResult> getOrderedStoryRecipientsAndIds(boolean isOutgoingOnly);
+
+  public abstract void markOnboardingStoryRead();
+
+  public abstract @NonNull Reader getAllStoriesFor(@NonNull RecipientId recipientId, int limit);
   public abstract @NonNull MessageId getStoryId(@NonNull RecipientId authorId, long sentTimestamp) throws NoSuchMessageException;
   public abstract int getNumberOfStoryReplies(long parentStoryId);
   public abstract @NonNull List<RecipientId>  getUnreadStoryThreadRecipientIds();
   public abstract boolean containsStories(long threadId);
   public abstract boolean hasSelfReplyInStory(long parentStoryId);
-  public abstract boolean hasSelfReplyInGroupStory(long parentStoryId);
+  public abstract boolean hasGroupReplyOrReactionInStory(long parentStoryId);
   public abstract @NonNull Cursor getStoryReplies(long parentStoryId);
-  public abstract @Nullable Long getOldestStorySendTimestamp();
-  public abstract int deleteStoriesOlderThan(long timestamp);
+  public abstract @Nullable Long getOldestStorySendTimestamp(boolean hasSeenReleaseChannelStories);
+  public abstract int deleteStoriesOlderThan(long timestamp, boolean hasSeenReleaseChannelStories);
   public abstract @NonNull MessageDatabase.Reader getUnreadStories(@NonNull RecipientId recipientId, int limit);
   public abstract @Nullable ParentStoryId.GroupReply getParentStoryIdForGroupReply(long messageId);
   public abstract void deleteGroupStoryReplies(long parentStoryId);
   public abstract boolean isOutgoingStoryAlreadyInDatabase(@NonNull RecipientId recipientId, long sentTimestamp);
   public abstract @NonNull List<MarkedMessageInfo> setGroupStoryMessagesReadSince(long threadId, long groupStoryId, long sinceTimestamp);
+  public abstract @NonNull List<StoryType> getStoryTypes(@NonNull List<MessageId> messageIds);
 
   public abstract @NonNull StoryViewState getStoryViewState(@NonNull RecipientId recipientId);
   public abstract void updateViewedStories(@NonNull Set<SyncMessageId> syncMessageIds);
@@ -237,6 +255,20 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
 
   final int getInsecureMessageCountForInsights() {
     return getMessageCountForRecipientsAndType(getOutgoingInsecureMessageClause());
+  }
+
+  public int getInsecureMessageCount() {
+    try (Cursor cursor = getReadableDatabase().query(getTableName(), SqlUtil.COUNT, getInsecureMessageClause(), null, null, null, null)) {
+      if (cursor.moveToFirst()) {
+        return cursor.getInt(0);
+      }
+    }
+
+    return 0;
+  }
+
+  public boolean hasSmsExportMessage(long threadId) {
+    return SQLiteDatabaseExtensionsKt.exists(getReadableDatabase(), getTableName(), THREAD_ID_WHERE + " AND " + getTypeField() + " = ?", threadId, Types.SMS_EXPORT_TYPE);
   }
 
   final int getSecureMessageCountForInsights() {
@@ -275,6 +307,50 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
     }
   }
 
+  /**
+   * Handles a synchronized read message.
+   * @param messageId An id representing the author-timestamp pair of the message that was read on a linked device. Note that the author could be self when
+   *                  syncing read receipts for reactions.
+   */
+  final @NonNull MmsSmsDatabase.TimestampReadResult setTimestampReadFromSyncMessage(SyncMessageId messageId, long proposedExpireStarted, @NonNull Map<Long, Long> threadToLatestRead) {
+    SQLiteDatabase         database   = databaseHelper.getSignalWritableDatabase();
+    List<Pair<Long, Long>> expiring   = new LinkedList<>();
+    String[]               projection = new String[] { ID, THREAD_ID, EXPIRES_IN, EXPIRE_STARTED };
+    String                 query      = getDateSentColumnName() + " = ? AND (" + RECIPIENT_ID + " = ? OR (" + RECIPIENT_ID + " = ? AND " + getOutgoingTypeClause() + "))";
+    String[]               args       = SqlUtil.buildArgs(messageId.getTimetamp(), messageId.getRecipientId(), Recipient.self().getId());
+    List<Long>             threads    = new LinkedList<>();
+
+    try (Cursor cursor = database.query(getTableName(), projection, query, args, null, null, null)) {
+      while (cursor.moveToNext()) {
+        long id            = cursor.getLong(cursor.getColumnIndexOrThrow(ID));
+        long threadId      = cursor.getLong(cursor.getColumnIndexOrThrow(THREAD_ID));
+        long expiresIn     = cursor.getLong(cursor.getColumnIndexOrThrow(EXPIRES_IN));
+        long expireStarted = cursor.getLong(cursor.getColumnIndexOrThrow(EXPIRE_STARTED));
+
+        expireStarted = expireStarted > 0 ? Math.min(proposedExpireStarted, expireStarted) : proposedExpireStarted;
+
+        ContentValues values = new ContentValues();
+        values.put(READ, 1);
+        values.put(REACTIONS_UNREAD, 0);
+        values.put(REACTIONS_LAST_SEEN, System.currentTimeMillis());
+
+        if (expiresIn > 0) {
+          values.put(EXPIRE_STARTED, expireStarted);
+          expiring.add(new Pair<>(id, expiresIn));
+        }
+
+        database.update(getTableName(), values, ID_WHERE, SqlUtil.buildArgs(id));
+
+        threads.add(threadId);
+
+        Long latest = threadToLatestRead.get(threadId);
+        threadToLatestRead.put(threadId, (latest != null) ? Math.max(latest, messageId.getTimetamp()) : messageId.getTimetamp());
+      }
+    }
+
+    return new MmsSmsDatabase.TimestampReadResult(expiring, threads);
+  }
+
   private int getMessageCountForRecipientsAndType(String typeClause) {
 
     SQLiteDatabase db           = databaseHelper.getSignalReadableDatabase();
@@ -305,6 +381,52 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
     String isSecure   = "(" + getTypeField() + " & " + (Types.SECURE_MESSAGE_BIT | Types.PUSH_MESSAGE_BIT) + ")";
 
     return String.format(Locale.ENGLISH, "(%s OR %s) AND %s", isSent, isReceived, isSecure);
+  }
+
+  protected String getInsecureMessageClause() {
+    return getInsecureMessageClause(-1);
+  }
+
+  protected String getInsecureMessageClause(long threadId) {
+    String isSent      = "(" + getTableName() + "." + getTypeField() + " & " + Types.BASE_TYPE_MASK + ") = " + Types.BASE_SENT_TYPE;
+    String isReceived  = "(" + getTableName() + "." + getTypeField() + " & " + Types.BASE_TYPE_MASK + ") = " + Types.BASE_INBOX_TYPE;
+    String isSecure    = "(" + getTableName() + "." + getTypeField() + " & " + (Types.SECURE_MESSAGE_BIT | Types.PUSH_MESSAGE_BIT) + ")";
+    String isNotSecure = "(" + getTableName() + "." + getTypeField() + " <= " + (Types.BASE_TYPE_MASK | Types.MESSAGE_ATTRIBUTE_MASK) + ")";
+
+    String whereClause = String.format(Locale.ENGLISH, "(%s OR %s) AND NOT %s AND %s", isSent, isReceived, isSecure, isNotSecure);
+
+    if (threadId != -1) {
+      whereClause += " AND " + getTableName() + "." +  THREAD_ID + " = " + threadId;
+    }
+
+    return whereClause;
+  }
+
+  public int getUnexportedInsecureMessagesCount() {
+    return getUnexportedInsecureMessagesCount(-1);
+  }
+
+  public int getUnexportedInsecureMessagesCount(long threadId) {
+    try (Cursor cursor = getWritableDatabase().query(getTableName(), SqlUtil.COUNT, getInsecureMessageClause(threadId) + " AND " + EXPORTED + " < ?", SqlUtil.buildArgs(MessageExportStatus.EXPORTED), null, null, null)) {
+      if (cursor.moveToFirst()) {
+        return cursor.getInt(0);
+      }
+    }
+
+    return 0;
+  }
+
+  /**
+   * Reset the exported status (not state) to the default for clearing errors.
+   */
+  public void clearInsecureMessageExportedErrorStatus() {
+    ContentValues values = new ContentValues(1);
+    values.put(EXPORTED, MessageExportStatus.UNEXPORTED.getCode());
+
+    SQLiteDatabaseExtensionsKt.update(getWritableDatabase(), getTableName())
+                              .values(values)
+                              .where(EXPORTED + " < ?", MessageExportStatus.UNEXPORTED)
+                              .run();
   }
 
   public void setReactionsSeen(long threadId, long sinceTimestamp) {
@@ -394,6 +516,29 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
       }
     }
     return data;
+  }
+
+  public List<Long> getIncomingPaymentRequestThreads() {
+    Cursor cursor = SQLiteDatabaseExtensionsKt.select(getReadableDatabase(), "DISTINCT " + THREAD_ID)
+        .from(getTableName())
+        .where("(" + getTypeField() + " & " + Types.BASE_TYPE_MASK + ") = " + Types.BASE_INBOX_TYPE + " AND (" + getTypeField() + " & ?) != 0", Types.SPECIAL_TYPE_ACTIVATE_PAYMENTS_REQUEST)
+        .run();
+
+    return CursorExtensionsKt.readToList(cursor, c -> CursorUtil.requireLong(c, THREAD_ID));
+  }
+
+  @Override
+  public void remapRecipient(@NonNull RecipientId fromId, @NonNull RecipientId toId) {
+    ContentValues values = new ContentValues();
+    values.put(RECIPIENT_ID, toId.serialize());
+    getWritableDatabase().update(getTableName(), values, RECIPIENT_ID + " = ?", SqlUtil.buildArgs(toId));
+  }
+
+  @Override
+  public void remapThread(long fromId, long toId) {
+    ContentValues values = new ContentValues();
+    values.put(SmsDatabase.THREAD_ID, toId);
+    getWritableDatabase().update(getTableName(), values, THREAD_ID + " = ?", SqlUtil.buildArgs(fromId));
   }
 
   void updateReactionsUnread(SQLiteDatabase db, long messageId, boolean hasReactions, boolean isRemoval) {
@@ -728,9 +873,43 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
     void onComplete();
   }
 
-  public interface Reader extends Closeable {
+  /**
+   * Allows the developer to safely iterate over and close a cursor containing
+   * data for MessageRecord objects. Supports for-each loops as well as try-with-resources
+   * blocks.
+   *
+   * Readers are considered "one-shot" and it's on the caller to decide what needs
+   * to be done with the data. Once read, a reader cannot be read from again. This
+   * is by design, since reading data out of a cursor involves object creations and
+   * lookups, so it is in the best interest of app performance to only read out the
+   * data once. If you need to parse the list multiple times, it is recommended that
+   * you copy the iterable out into a normal List, or use extension methods such as
+   * partition.
+   *
+   * This reader does not support removal, since this would be considered a destructive
+   * database call.
+   */
+  public interface Reader extends Closeable, Iterable<MessageRecord> {
+    /**
+     * @deprecated Use the Iterable interface instead.
+     */
+    @Deprecated
     MessageRecord getNext();
+
+    /**
+     * @deprecated Use the Iterable interface instead.
+     */
+    @Deprecated
     MessageRecord getCurrent();
+
+    /**
+     * Pulls the export state out of the query, if it is present.
+     */
+    @NonNull MessageExportState getMessageExportStateForCurrentRecord();
+
+    /**
+     * From the {@link Closeable} interface, removing the IOException requirement.
+     */
     void close();
   }
 
@@ -756,5 +935,24 @@ public abstract class MessageDatabase extends Database implements MmsSmsColumns 
     public long getDateReceived() {
       return dateReceived;
     }
+  }
+
+  /**
+   * Describes which messages to act on. This is used when incrementing receipts.
+   * Specifically, this was added to support stories having separate viewed receipt settings.
+   */
+  public enum MessageQualifier {
+    /**
+     * A normal database message (i.e. not a story)
+     */
+    NORMAL,
+    /**
+     * A story message
+     */
+    STORY,
+    /**
+     * Both normal and story message
+     */
+    ALL
   }
 }

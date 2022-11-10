@@ -5,6 +5,7 @@ import org.signal.core.util.CursorUtil
 import org.signal.core.util.logging.Log
 import org.thoughtcrime.securesms.database.MmsSmsColumns
 import org.thoughtcrime.securesms.database.MmsSmsDatabase
+import org.thoughtcrime.securesms.database.NoSuchMessageException
 import org.thoughtcrime.securesms.database.RecipientDatabase
 import org.thoughtcrime.securesms.database.SignalDatabase
 import org.thoughtcrime.securesms.database.model.MessageId
@@ -12,6 +13,7 @@ import org.thoughtcrime.securesms.database.model.MessageRecord
 import org.thoughtcrime.securesms.database.model.ReactionRecord
 import org.thoughtcrime.securesms.notifications.profiles.NotificationProfile
 import org.thoughtcrime.securesms.recipients.Recipient
+import org.thoughtcrime.securesms.util.isStoryReaction
 
 /**
  * Queries the message databases to determine messages that should be in notifications.
@@ -21,12 +23,12 @@ object NotificationStateProvider {
   private val TAG = Log.tag(NotificationStateProvider::class.java)
 
   @WorkerThread
-  fun constructNotificationState(stickyThreads: Map<ConversationId, MessageNotifierV2.StickyThread>, notificationProfile: NotificationProfile?): NotificationStateV2 {
+  fun constructNotificationState(stickyThreads: Map<ConversationId, DefaultMessageNotifier.StickyThread>, notificationProfile: NotificationProfile?): NotificationState {
     val messages: MutableList<NotificationMessage> = mutableListOf()
 
     SignalDatabase.mmsSms.getMessagesForNotificationState(stickyThreads.values).use { unreadMessages ->
       if (unreadMessages.count == 0) {
-        return NotificationStateV2.EMPTY
+        return NotificationState.EMPTY
       }
 
       MmsSmsDatabase.readerFor(unreadMessages).use { reader ->
@@ -38,11 +40,15 @@ object NotificationStateProvider {
             val conversationId = ConversationId.fromMessageRecord(record)
 
             val parentRecord = conversationId.groupStoryId?.let {
-              SignalDatabase.mms.getMessageRecord(it)
+              try {
+                SignalDatabase.mms.getMessageRecord(it)
+              } catch (e: NoSuchMessageException) {
+                null
+              }
             }
 
             val hasSelfRepliedToGroupStory = conversationId.groupStoryId?.let {
-              SignalDatabase.mms.hasSelfReplyInGroupStory(it)
+              SignalDatabase.mms.hasGroupReplyOrReactionInStory(it)
             }
 
             messages += NotificationMessage(
@@ -70,19 +76,19 @@ object NotificationStateProvider {
     }
 
     val conversations: MutableList<NotificationConversation> = mutableListOf()
-    val muteFilteredMessages: MutableList<NotificationStateV2.FilteredMessage> = mutableListOf()
-    val profileFilteredMessages: MutableList<NotificationStateV2.FilteredMessage> = mutableListOf()
+    val muteFilteredMessages: MutableList<NotificationState.FilteredMessage> = mutableListOf()
+    val profileFilteredMessages: MutableList<NotificationState.FilteredMessage> = mutableListOf()
 
     messages.groupBy { it.thread }
       .forEach { (thread, threadMessages) ->
-        var notificationItems: MutableList<NotificationItemV2> = mutableListOf()
+        var notificationItems: MutableList<NotificationItem> = mutableListOf()
 
         for (notification: NotificationMessage in threadMessages) {
           when (notification.includeMessage(notificationProfile)) {
             MessageInclusion.INCLUDE -> notificationItems.add(MessageNotification(notification.threadRecipient, notification.messageRecord))
             MessageInclusion.EXCLUDE -> Unit
-            MessageInclusion.MUTE_FILTERED -> muteFilteredMessages += NotificationStateV2.FilteredMessage(notification.messageRecord.id, notification.messageRecord.isMms)
-            MessageInclusion.PROFILE_FILTERED -> profileFilteredMessages += NotificationStateV2.FilteredMessage(notification.messageRecord.id, notification.messageRecord.isMms)
+            MessageInclusion.MUTE_FILTERED -> muteFilteredMessages += NotificationState.FilteredMessage(notification.messageRecord.id, notification.messageRecord.isMms)
+            MessageInclusion.PROFILE_FILTERED -> profileFilteredMessages += NotificationState.FilteredMessage(notification.messageRecord.id, notification.messageRecord.isMms)
           }
 
           if (notification.hasUnreadReactions) {
@@ -90,8 +96,8 @@ object NotificationStateProvider {
               when (notification.includeReaction(it, notificationProfile)) {
                 MessageInclusion.INCLUDE -> notificationItems.add(ReactionNotification(notification.threadRecipient, notification.messageRecord, it))
                 MessageInclusion.EXCLUDE -> Unit
-                MessageInclusion.MUTE_FILTERED -> muteFilteredMessages += NotificationStateV2.FilteredMessage(notification.messageRecord.id, notification.messageRecord.isMms)
-                MessageInclusion.PROFILE_FILTERED -> profileFilteredMessages += NotificationStateV2.FilteredMessage(notification.messageRecord.id, notification.messageRecord.isMms)
+                MessageInclusion.MUTE_FILTERED -> muteFilteredMessages += NotificationState.FilteredMessage(notification.messageRecord.id, notification.messageRecord.isMms)
+                MessageInclusion.PROFILE_FILTERED -> profileFilteredMessages += NotificationState.FilteredMessage(notification.messageRecord.id, notification.messageRecord.isMms)
               }
             }
           }
@@ -108,7 +114,7 @@ object NotificationStateProvider {
         }
       }
 
-    return NotificationStateV2(conversations, muteFilteredMessages, profileFilteredMessages)
+    return NotificationState(conversations, muteFilteredMessages, profileFilteredMessages)
   }
 
   private data class NotificationMessage(
@@ -125,7 +131,7 @@ object NotificationStateProvider {
   ) {
     private val isGroupStoryReply: Boolean = thread.groupStoryId != null
     private val isUnreadIncoming: Boolean = isUnreadMessage && !messageRecord.isOutgoing && !isGroupStoryReply
-    private val isNotifiableGroupStoryMessage: Boolean = isUnreadMessage && !messageRecord.isOutgoing && isGroupStoryReply && (isParentStorySentBySelf || hasSelfRepliedToStory)
+    private val isNotifiableGroupStoryMessage: Boolean = isUnreadMessage && !messageRecord.isOutgoing && isGroupStoryReply && (isParentStorySentBySelf || (hasSelfRepliedToStory && !messageRecord.isStoryReaction()))
 
     fun includeMessage(notificationProfile: NotificationProfile?): MessageInclusion {
       return if (isUnreadIncoming || stickyThread || isNotifiableGroupStoryMessage) {

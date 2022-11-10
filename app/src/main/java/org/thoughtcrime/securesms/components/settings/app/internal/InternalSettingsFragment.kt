@@ -4,9 +4,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.DialogInterface
+import android.os.Bundle
+import android.view.View
 import android.widget.Toast
 import androidx.lifecycle.ViewModelProvider
 import androidx.navigation.fragment.findNavController
+import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.signal.core.util.AppUtil
 import org.signal.core.util.concurrent.SignalExecutors
@@ -15,12 +18,12 @@ import org.signal.ringrtc.CallManager
 import org.thoughtcrime.securesms.BuildConfig
 import org.thoughtcrime.securesms.R
 import org.thoughtcrime.securesms.components.settings.DSLConfiguration
-import org.thoughtcrime.securesms.components.settings.DSLSettingsAdapter
 import org.thoughtcrime.securesms.components.settings.DSLSettingsFragment
 import org.thoughtcrime.securesms.components.settings.DSLSettingsText
 import org.thoughtcrime.securesms.components.settings.configure
 import org.thoughtcrime.securesms.database.LocalMetricsDatabase
 import org.thoughtcrime.securesms.database.LogDatabase
+import org.thoughtcrime.securesms.database.MegaphoneDatabase
 import org.thoughtcrime.securesms.database.SignalDatabase
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies
 import org.thoughtcrime.securesms.jobmanager.JobTracker
@@ -35,26 +38,51 @@ import org.thoughtcrime.securesms.jobs.StorageForcePushJob
 import org.thoughtcrime.securesms.jobs.SubscriptionKeepAliveJob
 import org.thoughtcrime.securesms.jobs.SubscriptionReceiptRequestResponseJob
 import org.thoughtcrime.securesms.keyvalue.SignalStore
+import org.thoughtcrime.securesms.megaphone.MegaphoneRepository
+import org.thoughtcrime.securesms.megaphone.Megaphones
 import org.thoughtcrime.securesms.payments.DataExportUtil
 import org.thoughtcrime.securesms.storage.StorageSyncHelper
 import org.thoughtcrime.securesms.util.ConversationUtil
-import org.thoughtcrime.securesms.util.FeatureFlags
+import org.thoughtcrime.securesms.util.adapter.mapping.MappingAdapter
 import org.thoughtcrime.securesms.util.navigation.safeNavigate
 import java.util.Optional
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
+import kotlin.time.Duration.Companion.seconds
 
 class InternalSettingsFragment : DSLSettingsFragment(R.string.preferences__internal_preferences) {
 
   private lateinit var viewModel: InternalSettingsViewModel
 
-  override fun bindAdapter(adapter: DSLSettingsAdapter) {
+  private var scrollToPosition: Int = 0
+  private val layoutManager: LinearLayoutManager?
+    get() = recyclerView?.layoutManager as? LinearLayoutManager
+
+  override fun onPause() {
+    super.onPause()
+    val firstVisiblePosition: Int? = layoutManager?.findFirstVisibleItemPosition()
+    if (firstVisiblePosition != null) {
+      SignalStore.internalValues().lastScrollPosition = firstVisiblePosition
+    }
+  }
+
+  override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+    super.onViewCreated(view, savedInstanceState)
+    scrollToPosition = SignalStore.internalValues().lastScrollPosition
+  }
+
+  override fun bindAdapter(adapter: MappingAdapter) {
     val repository = InternalSettingsRepository(requireContext())
     val factory = InternalSettingsViewModel.Factory(repository)
     viewModel = ViewModelProvider(this, factory)[InternalSettingsViewModel::class.java]
 
     viewModel.state.observe(viewLifecycleOwner) {
-      adapter.submitList(getConfiguration(it).toMappingModelList())
+      adapter.submitList(getConfiguration(it).toMappingModelList()) {
+        if (scrollToPosition != 0) {
+          layoutManager?.scrollToPositionWithOffset(scrollToPosition, 0)
+          scrollToPosition = 0
+        }
+      }
     }
   }
 
@@ -169,15 +197,6 @@ class InternalSettingsFragment : DSLSettingsFragment(R.string.preferences__inter
       sectionHeaderPref(R.string.preferences__internal_preferences_groups_v2)
 
       switchPref(
-        title = DSLSettingsText.from(R.string.preferences__internal_do_not_create_gv2),
-        summary = DSLSettingsText.from(R.string.preferences__internal_do_not_create_gv2_description),
-        isChecked = state.gv2doNotCreateGv2Groups,
-        onClick = {
-          viewModel.setGv2DoNotCreateGv2Groups(!state.gv2doNotCreateGv2Groups)
-        }
-      )
-
-      switchPref(
         title = DSLSettingsText.from(R.string.preferences__internal_force_gv2_invites),
         summary = DSLSettingsText.from(R.string.preferences__internal_force_gv2_invites_description),
         isChecked = state.gv2forceInvites,
@@ -206,29 +225,26 @@ class InternalSettingsFragment : DSLSettingsFragment(R.string.preferences__inter
 
       dividerPref()
 
-      sectionHeaderPref(R.string.preferences__internal_preferences_groups_v1_migration)
-
-      switchPref(
-        title = DSLSettingsText.from(R.string.preferences__internal_do_not_initiate_automigrate),
-        summary = DSLSettingsText.from(R.string.preferences__internal_do_not_initiate_automigrate_description),
-        isChecked = state.disableAutoMigrationInitiation,
-        onClick = {
-          viewModel.setDisableAutoMigrationInitiation(!state.disableAutoMigrationInitiation)
-        }
-      )
-
-      switchPref(
-        title = DSLSettingsText.from(R.string.preferences__internal_do_not_notify_automigrate),
-        summary = DSLSettingsText.from(R.string.preferences__internal_do_not_notify_automigrate_description),
-        isChecked = state.disableAutoMigrationNotification,
-        onClick = {
-          viewModel.setDisableAutoMigrationNotification(!state.disableAutoMigrationNotification)
-        }
-      )
-
-      dividerPref()
-
       sectionHeaderPref(R.string.preferences__internal_network)
+
+      switchPref(
+        title = DSLSettingsText.from("Force websocket mode"),
+        summary = DSLSettingsText.from("Pretend you have no Play Services. Ignores websocket messages and keeps the websocket open in a foreground service. You have to manually force-stop the app for changes to take effect."),
+        isChecked = state.forceWebsocketMode,
+        onClick = {
+          viewModel.setForceWebsocketMode(!state.forceWebsocketMode)
+          SimpleTask.run({
+            val jobState = ApplicationDependencies.getJobManager().runSynchronously(RefreshAttributesJob(), 10.seconds.inWholeMilliseconds)
+            return@run jobState.isPresent && jobState.get().isComplete
+          }, { success ->
+            if (success) {
+              Toast.makeText(context, "Successfully refreshed attributes. Force-stop the app for changes to take effect.", Toast.LENGTH_SHORT).show()
+            } else {
+              Toast.makeText(context, "Failed to refresh attributes.", Toast.LENGTH_SHORT).show()
+            }
+          })
+        }
+      )
 
       switchPref(
         title = DSLSettingsText.from(R.string.preferences__internal_allow_censorship_toggle),
@@ -393,7 +409,7 @@ class InternalSettingsFragment : DSLSettingsFragment(R.string.preferences__inter
         }
       )
 
-      if (FeatureFlags.donorBadges() && SignalStore.donationsValues().getSubscriber() != null) {
+      if (SignalStore.donationsValues().getSubscriber() != null) {
         dividerPref()
 
         sectionHeaderPref(R.string.preferences__internal_badges)
@@ -428,6 +444,19 @@ class InternalSettingsFragment : DSLSettingsFragment(R.string.preferences__inter
         title = DSLSettingsText.from(R.string.preferences__internal_release_channel_set_last_version),
         onClick = {
           SignalStore.releaseChannelValues().highestVersionNoteReceived = max(SignalStore.releaseChannelValues().highestVersionNoteReceived - 10, 0)
+        }
+      )
+
+      clickPref(
+        title = DSLSettingsText.from(R.string.preferences__internal_reset_donation_megaphone),
+        onClick = {
+          SignalDatabase.remoteMegaphones.debugRemoveAll()
+          MegaphoneDatabase.getInstance(ApplicationDependencies.getApplication()).let {
+            it.delete(Megaphones.Event.REMOTE_MEGAPHONE)
+            it.markFirstVisible(Megaphones.Event.DONATE_Q2_2022, System.currentTimeMillis() - TimeUnit.DAYS.toMillis(31))
+          }
+          // Force repository database cache refresh
+          MegaphoneRepository(ApplicationDependencies.getApplication()).onFirstEverAppLaunch()
         }
       )
 
@@ -478,11 +507,27 @@ class InternalSettingsFragment : DSLSettingsFragment(R.string.preferences__inter
 
       sectionHeaderPref(R.string.ConversationListTabs__stories)
 
-      switchPref(
-        title = DSLSettingsText.from(R.string.preferences__internal_disable_stories),
-        isChecked = state.disableStories,
+      clickPref(
+        title = DSLSettingsText.from(R.string.preferences__internal_clear_onboarding_state),
+        summary = DSLSettingsText.from(R.string.preferences__internal_clears_onboarding_flag_and_triggers_download_of_onboarding_stories),
+        isEnabled = state.canClearOnboardingState,
         onClick = {
-          viewModel.toggleStories()
+          viewModel.onClearOnboardingState()
+        }
+      )
+
+      clickPref(
+        title = DSLSettingsText.from("Clear first time navigation state"),
+        isEnabled = true,
+        onClick = {
+          SignalStore.storyValues().userHasSeenFirstNavView = false
+        }
+      )
+
+      clickPref(
+        title = DSLSettingsText.from(R.string.preferences__internal_stories_dialog_launcher),
+        onClick = {
+          findNavController().safeNavigate(InternalSettingsFragmentDirections.actionInternalSettingsFragmentToStoryDialogsLauncherFragment())
         }
       )
     }

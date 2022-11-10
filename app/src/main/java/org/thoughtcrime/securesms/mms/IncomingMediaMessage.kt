@@ -11,9 +11,8 @@ import org.thoughtcrime.securesms.database.model.databaseprotos.GiftBadge
 import org.thoughtcrime.securesms.groups.GroupId
 import org.thoughtcrime.securesms.linkpreview.LinkPreview
 import org.thoughtcrime.securesms.recipients.RecipientId
-import org.thoughtcrime.securesms.util.GroupUtil
 import org.whispersystems.signalservice.api.messages.SignalServiceAttachment
-import org.whispersystems.signalservice.api.messages.SignalServiceGroupContext
+import org.whispersystems.signalservice.api.messages.SignalServiceGroupV2
 import java.util.Optional
 
 class IncomingMediaMessage(
@@ -39,7 +38,9 @@ class IncomingMediaMessage(
   sharedContacts: List<Contact> = emptyList(),
   linkPreviews: List<LinkPreview> = emptyList(),
   mentions: List<Mention> = emptyList(),
-  val giftBadge: GiftBadge? = null
+  val giftBadge: GiftBadge? = null,
+  val isActivatePaymentsRequest: Boolean = false,
+  val isPaymentsActivated: Boolean = false
 ) {
 
   val attachments: List<Attachment> = ArrayList(attachments)
@@ -62,7 +63,9 @@ class IncomingMediaMessage(
     expirationUpdate: Boolean,
     viewOnce: Boolean,
     unidentified: Boolean,
-    sharedContacts: Optional<List<Contact>>
+    sharedContacts: Optional<List<Contact>>,
+    activatePaymentsRequest: Boolean,
+    paymentsActivated: Boolean
   ) : this(
     from = from,
     groupId = groupId.orElse(null),
@@ -80,6 +83,8 @@ class IncomingMediaMessage(
     serverGuid = null,
     attachments = attachments?.let { ArrayList<Attachment>(it) } ?: emptyList(),
     sharedContacts = ArrayList<Contact>(sharedContacts.orElse(emptyList())),
+    isActivatePaymentsRequest = activatePaymentsRequest,
+    isPaymentsActivated = paymentsActivated
   )
 
   constructor(
@@ -96,7 +101,7 @@ class IncomingMediaMessage(
     viewOnce: Boolean,
     unidentified: Boolean,
     body: Optional<String>,
-    group: Optional<SignalServiceGroupContext>,
+    group: Optional<SignalServiceGroupV2>,
     attachments: Optional<List<SignalServiceAttachment>>,
     quote: Optional<QuoteModel>,
     sharedContacts: Optional<List<Contact>>,
@@ -104,10 +109,12 @@ class IncomingMediaMessage(
     mentions: Optional<List<Mention>>,
     sticker: Optional<Attachment>,
     serverGuid: String?,
-    giftBadge: GiftBadge?
+    giftBadge: GiftBadge?,
+    activatePaymentsRequest: Boolean,
+    paymentsActivated: Boolean
   ) : this(
     from = from,
-    groupId = if (group.isPresent) GroupUtil.idFromGroupContextOrThrow(group.get()) else null,
+    groupId = if (group.isPresent) GroupId.v2(group.get().masterKey) else null,
     body = body.orElse(null),
     isPushMessage = true,
     storyType = storyType,
@@ -127,6 +134,8 @@ class IncomingMediaMessage(
     sharedContacts = sharedContacts.orElse(emptyList()),
     linkPreviews = linkPreviews.orElse(emptyList()),
     mentions = mentions.orElse(emptyList()),
-    giftBadge = giftBadge
+    giftBadge = giftBadge,
+    isActivatePaymentsRequest = activatePaymentsRequest,
+    isPaymentsActivated = paymentsActivated
   )
 }

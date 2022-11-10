@@ -13,7 +13,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.widget.Toolbar;
 import androidx.fragment.app.Fragment;
-import androidx.lifecycle.ViewModelProviders;
+import androidx.lifecycle.ViewModelProvider;
 import androidx.navigation.Navigation;
 
 import org.signal.core.util.EditTextUtil;
@@ -76,7 +76,7 @@ public class EditProfileNameFragment extends Fragment {
   }
 
   private void initializeViewModel() {
-    this.viewModel = ViewModelProviders.of(this).get(EditProfileNameViewModel.class);
+    this.viewModel = new ViewModelProvider(this).get(EditProfileNameViewModel.class);
 
     viewModel.getSaveState().observe(getViewLifecycleOwner(), this::presentSaveState);
     viewModel.getEvents().observe(getViewLifecycleOwner(), this::presentEvent);
@@ -91,12 +91,14 @@ public class EditProfileNameFragment extends Fragment {
         setEditTextEnabled(familyName, true);
         break;
       case IDLE:
+        saveButton.setClickable(true);
         saveButton.cancelSpinning();
         saveButton.setAlpha(1);
         setEditTextEnabled(givenName, true);
         setEditTextEnabled(familyName, true);
         break;
       case IN_PROGRESS:
+        saveButton.setClickable(false);
         saveButton.setSpinning();
         saveButton.setAlpha(1);
         setEditTextEnabled(givenName, false);

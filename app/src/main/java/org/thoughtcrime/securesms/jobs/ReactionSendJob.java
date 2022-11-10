@@ -77,7 +77,7 @@ public class ReactionSendJob extends BaseJob {
     }
 
     RecipientId       selfId     = Recipient.self().getId();
-    List<RecipientId> recipients = conversationRecipient.isGroup() ? RecipientUtil.getEligibleForSending(conversationRecipient.getParticipants())
+    List<RecipientId> recipients = conversationRecipient.isGroup() ? RecipientUtil.getEligibleForSending(Recipient.resolvedList(conversationRecipient.getParticipantIds()))
                                                                                   .stream()
                                                                                   .map(Recipient::getId)
                                                                                   .filter(r -> !r.equals(selfId))
@@ -238,11 +238,14 @@ public class ReactionSendJob extends BaseJob {
     boolean                  includesSelf        = nonSelfDestinations.size() != destinations.size();
     List<SendMessageResult>  results             = GroupSendUtil.sendResendableDataMessage(context,
                                                                                            conversationRecipient.getGroupId().map(GroupId::requireV2).orElse(null),
+                                                                                           null,
                                                                                            nonSelfDestinations,
                                                                                            false,
                                                                                            ContentHint.RESENDABLE,
                                                                                            messageId,
-                                                                                           dataMessage);
+                                                                                           dataMessage,
+                                                                                           true,
+                                                                                           false);
 
     if (includesSelf) {
       results.add(ApplicationDependencies.getSignalServiceMessageSender().sendSyncMessage(dataMessage));
@@ -260,7 +263,7 @@ public class ReactionSendJob extends BaseJob {
   {
     return new SignalServiceDataMessage.Reaction(reaction.getEmoji(),
                                                  remove,
-                                                 RecipientUtil.toSignalServiceAddress(context, targetAuthor),
+                                                 RecipientUtil.getOrFetchServiceId(context, targetAuthor),
                                                  targetSentTimestamp);
   }
 

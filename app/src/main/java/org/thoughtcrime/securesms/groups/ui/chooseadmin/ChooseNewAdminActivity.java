@@ -9,7 +9,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.widget.Toolbar;
-import androidx.lifecycle.ViewModelProviders;
+import androidx.lifecycle.ViewModelProvider;
 
 import com.annimon.stream.Collectors;
 import com.annimon.stream.Stream;
@@ -101,7 +101,7 @@ public final class ChooseNewAdminActivity extends PassphraseRequiredActivity {
   }
 
   private void initializeViewModel() {
-    viewModel = ViewModelProviders.of(this, new ChooseNewAdminViewModel.Factory(groupId)).get(ChooseNewAdminViewModel.class);
+    viewModel = new ViewModelProvider(this, new ChooseNewAdminViewModel.Factory(groupId)).get(ChooseNewAdminViewModel.class);
 
     viewModel.getNonAdminFullMembers().observe(this, groupList::setMembers);
     viewModel.getSelection().observe(this, selection -> done.setVisibility(selection.isEmpty() ? View.GONE : View.VISIBLE));
@@ -109,7 +109,7 @@ public final class ChooseNewAdminActivity extends PassphraseRequiredActivity {
 
   private void handleUpdateAndLeaveResult(@NonNull GroupChangeResult updateResult) {
     if (updateResult.isSuccess()) {
-      String title = Recipient.externalGroupExact(this, groupId).getDisplayName(this);
+      String title = Recipient.externalGroupExact(groupId).getDisplayName(this);
       Toast.makeText(this, getString(R.string.ChooseNewAdminActivity_you_left, title), Toast.LENGTH_LONG).show();
       startActivity(MainActivity.clearTop(this));
       finish();

@@ -26,6 +26,7 @@ import android.graphics.PorterDuff;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.Build;
 import android.text.Annotation;
 import android.text.Spannable;
 import android.text.SpannableString;
@@ -41,6 +42,7 @@ import android.text.style.URLSpan;
 import android.text.util.Linkify;
 import android.util.AttributeSet;
 import android.util.TypedValue;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.TouchDelegate;
 import android.view.View;
@@ -62,13 +64,13 @@ import androidx.lifecycle.LifecycleOwner;
 
 import com.annimon.stream.Stream;
 import com.google.android.exoplayer2.MediaItem;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.common.collect.Sets;
 
 import org.signal.core.util.DimensionUnit;
 import org.signal.core.util.StringUtil;
 import org.signal.core.util.logging.Log;
 import org.thoughtcrime.securesms.BindableConversationItem;
-import org.thoughtcrime.securesms.MediaPreviewActivity;
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.attachments.DatabaseAttachment;
 import org.thoughtcrime.securesms.badges.BadgeImageView;
@@ -94,6 +96,7 @@ import org.thoughtcrime.securesms.conversation.colors.Colorizer;
 import org.thoughtcrime.securesms.conversation.mutiselect.MultiselectCollection;
 import org.thoughtcrime.securesms.conversation.mutiselect.MultiselectPart;
 import org.thoughtcrime.securesms.database.AttachmentDatabase;
+import org.thoughtcrime.securesms.database.MediaDatabase;
 import org.thoughtcrime.securesms.database.MessageDatabase;
 import org.thoughtcrime.securesms.database.SignalDatabase;
 import org.thoughtcrime.securesms.database.model.MediaMmsMessageRecord;
@@ -109,6 +112,8 @@ import org.thoughtcrime.securesms.jobs.MmsSendJob;
 import org.thoughtcrime.securesms.jobs.SmsSendJob;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
 import org.thoughtcrime.securesms.linkpreview.LinkPreview;
+import org.thoughtcrime.securesms.mediapreview.MediaIntentFactory;
+import org.thoughtcrime.securesms.mediapreview.MediaPreviewV2Fragment;
 import org.thoughtcrime.securesms.mms.GlideRequests;
 import org.thoughtcrime.securesms.mms.ImageSlide;
 import org.thoughtcrime.securesms.mms.PartAuthority;
@@ -149,8 +154,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import kotlin.Unit;
 import kotlin.jvm.functions.Function1;
@@ -178,8 +181,6 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
   private static final long  MAX_CLUSTERING_TIME_DIFF   = TimeUnit.MINUTES.toMillis(3);
   private static final int   CONDENSED_MODE_MAX_LINES   = 3;
 
-  private static final Pattern NOT_URL_PATTERN = Pattern.compile("[^a-zA-Z0-9-._~:/?#\\[\\]@!$&'()\\*+,;=]");
-
   private ConversationMessage     conversationMessage;
   private MessageRecord           messageRecord;
   private Optional<MessageRecord> nextMessageRecord;
@@ -188,13 +189,8 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
   private LiveRecipient           recipient;
   private GlideRequests           glideRequests;
   private ValueAnimator           pulseOutlinerAlphaAnimator;
-  private Optional<MessageRecord> previousMessage;
-
-  /**
-   * Whether or not we're rendering this item in a constrained space.
-   * Today this is only {@link org.thoughtcrime.securesms.conversation.quotes.MessageQuotesBottomSheet}.
-   */
-  private boolean isCondensedMode;
+  private Optional<MessageRecord>     previousMessage;
+  private ConversationItemDisplayMode displayMode;
 
             protected ConversationItemBodyBubble bodyBubble;
             protected View                       reply;
@@ -352,7 +348,7 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
                    boolean isMessageRequestAccepted,
                    boolean allowedToPlayInline,
                    @NonNull Colorizer colorizer,
-                   boolean isCondensedMode)
+                   @NonNull ConversationItemDisplayMode displayMode)
   {
     if (this.recipient != null) this.recipient.removeForeverObserver(this);
     if (this.conversationRecipient != null) this.conversationRecipient.removeForeverObserver(this);
@@ -373,7 +369,7 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
     this.canPlayContent         = false;
     this.mediaItem              = null;
     this.colorizer              = colorizer;
-    this.isCondensedMode        = isCondensedMode;
+    this.displayMode            = displayMode;
     this.previousMessage        = previousMessageRecord;
 
     this.recipient.observeForever(this);
@@ -403,6 +399,11 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
   }
 
   @Override
+  public void updateSelectedState() {
+    setHasBeenQuoted(conversationMessage);
+  }
+
+  @Override
   public void updateTimestamps() {
     getActiveFooter(messageRecord).setMessageRecord(messageRecord, locale);
   }
@@ -414,7 +415,7 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
 
   @Override
   public boolean dispatchTouchEvent(MotionEvent ev) {
-    if (isCondensedMode) return super.dispatchTouchEvent(ev);
+    if (isCondensedMode()) return super.dispatchTouchEvent(ev);
 
     switch (ev.getAction()) {
       case MotionEvent.ACTION_DOWN:
@@ -899,11 +900,19 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
   }
 
   /**
+   * Whether or not we're rendering this item in a constrained space.
+   * Today this is only {@link org.thoughtcrime.securesms.conversation.quotes.MessageQuotesBottomSheet}.
+   */
+  private boolean isCondensedMode() {
+    return displayMode == ConversationItemDisplayMode.CONDENSED;
+  }
+
+  /**
    * Whether or not we want to condense the actual content of the bubble. e.g. shorten image height, text content, etc.
    * Today, we only want to do this for the first message when we're in condensed mode.
    */
   private boolean isContentCondensed() {
-    return isCondensedMode && !previousMessage.isPresent();
+    return isCondensedMode() && !previousMessage.isPresent();
   }
 
   private boolean isStoryReaction(MessageRecord messageRecord) {
@@ -943,11 +952,11 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
   }
 
   private boolean hasExtraText(MessageRecord messageRecord) {
-    return MessageRecordUtil.hasExtraText(messageRecord) || isContentCondensed();
+    return MessageRecordUtil.hasExtraText(messageRecord) || (!messageRecord.isDisplayBodyEmpty(context) && isContentCondensed());
   }
 
   private boolean hasQuote(MessageRecord messageRecord) {
-    return MessageRecordUtil.hasQuote(messageRecord) && (!isCondensedMode || !previousMessage.isPresent());
+    return MessageRecordUtil.hasQuote(messageRecord);
   }
 
   private boolean hasSharedContact(MessageRecord messageRecord) {
@@ -1179,7 +1188,11 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
       if (giftViewStub.resolved())       giftViewStub.get().setVisibility(View.GONE);
 
       //noinspection ConstantConditions
-      documentViewStub.get().setDocument(((MediaMmsMessageRecord) messageRecord).getSlideDeck().getDocumentSlide(), showControls);
+      documentViewStub.get().setDocument(
+          ((MediaMmsMessageRecord) messageRecord).getSlideDeck().getDocumentSlide(),
+          showControls,
+          displayMode != ConversationItemDisplayMode.DETAILED
+      );
       documentViewStub.get().setDocumentClickListener(new ThumbnailClickListener());
       documentViewStub.get().setDownloadClickListener(singleDownloadClickListener);
       documentViewStub.get().setOnLongClickListener(passthroughClickListener);
@@ -1234,8 +1247,8 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
       List<Slide> thumbnailSlides = ((MmsMessageRecord) messageRecord).getSlideDeck().getThumbnailSlides();
       mediaThumbnailStub.require().setMinimumThumbnailWidth(readDimen(isCaptionlessMms(messageRecord) ? R.dimen.media_bubble_min_width_solo
                                                                                                       : R.dimen.media_bubble_min_width_with_content));
-      mediaThumbnailStub.require().setMaximumThumbnailHeight(readDimen(isCondensedMode ? R.dimen.media_bubble_max_height_condensed
-                                                                                       : R.dimen.media_bubble_max_height));
+      mediaThumbnailStub.require().setMaximumThumbnailHeight(readDimen(isContentCondensed() ? R.dimen.media_bubble_max_height_condensed
+                                                                                            : R.dimen.media_bubble_max_height));
       mediaThumbnailStub.require().setImageResource(glideRequests,
                                                     thumbnailSlides,
                                                     showControls,
@@ -1472,26 +1485,12 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
     boolean hasLinks    = LinkifyCompat.addLinks(messageBody, shouldLinkifyAllLinks ? linkPattern : 0);
 
     if (hasLinks) {
-      URLSpan[] urlSpans = messageBody.getSpans(0, messageBody.length(), URLSpan.class);
-
-      for (URLSpan urlSpan : urlSpans) {
-        int start = messageBody.getSpanStart(urlSpan);
-        int end   = messageBody.getSpanEnd(urlSpan);
-
-        Matcher matcher = NOT_URL_PATTERN.matcher(messageBody.toString().substring(end));
-        if (matcher.find()) {
-          int     newEnd  = end + matcher.start();
-          URLSpan newSpan = new URLSpan(messageBody.toString().substring(start, newEnd));
-          messageBody.removeSpan(urlSpan);
-          messageBody.setSpan(newSpan, start, newEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        }
-      }
-
-      Stream.of(urlSpans)
+      Stream.of(messageBody.getSpans(0, messageBody.length(), URLSpan.class))
             .filterNot(url -> LinkUtil.isLegalUrl(url.getURL()))
             .forEach(messageBody::removeSpan);
 
-      urlSpans = messageBody.getSpans(0, messageBody.length(), URLSpan.class);
+      URLSpan[] urlSpans = messageBody.getSpans(0, messageBody.length(), URLSpan.class);
+
       for (URLSpan urlSpan : urlSpans) {
         int     start = messageBody.getSpanStart(urlSpan);
         int     end   = messageBody.getSpanEnd(urlSpan);
@@ -1608,6 +1607,9 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
     } else if (current.isOutgoing()) {
       ViewUtil.setPaddingStart(this, readDimen(R.dimen.conversation_individual_left_gutter));
       ViewUtil.setPaddingEnd(this, readDimen(R.dimen.conversation_individual_right_gutter));
+    } else {
+      ViewUtil.setPaddingStart(this, readDimen(R.dimen.conversation_individual_received_left_gutter));
+      ViewUtil.setPaddingEnd(this, readDimen(R.dimen.conversation_individual_right_gutter));
     }
   }
 
@@ -1693,7 +1695,7 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
   }
 
   private void setHasBeenQuoted(@NonNull ConversationMessage message) {
-    if (message.hasBeenQuoted() && quotedIndicator != null) {
+    if (message.hasBeenQuoted() && !isCondensedMode() && quotedIndicator != null && batchSelected.isEmpty()) {
       quotedIndicator.setVisibility(VISIBLE);
       quotedIndicator.setOnClickListener(quotedIndicatorClickListener);
     } else if (quotedIndicator != null) {
@@ -2159,6 +2161,8 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
       bodyBubble.setOnClickListener(unused -> {
         openGift.invoke(this);
         eventListener.onGiftBadgeRevealed(messageRecord);
+        bodyBubble.performHapticFeedback(Build.VERSION.SDK_INT >= 30 ? HapticFeedbackConstants.CONFIRM
+                                                                     : HapticFeedbackConstants.KEYBOARD_TAP);
       });
       giftViewStub.get().onGiftNotOpened();
     }
@@ -2171,6 +2175,11 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
       bodyBubble.setClickable(false);
       giftViewStub.get().onGiftOpened();
     }
+  }
+
+  @Override
+  public @NonNull AnimationSign getAnimationSign() {
+    return AnimationSign.get(ViewUtil.isLtr(this), messageRecord.isOutgoing());
   }
 
   private class SharedContactEventListener implements SharedContactView.EventListener {
@@ -2308,22 +2317,25 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
 
   private class ThumbnailClickListener implements SlideClickListener {
     public void onClick(final View v, final Slide slide) {
-      if (shouldInterceptClicks(messageRecord) || !batchSelected.isEmpty()) {
+      if (shouldInterceptClicks(messageRecord) || !batchSelected.isEmpty() || isCondensedMode()) {
         performClick();
       } else if (!canPlayContent && mediaItem != null && eventListener != null) {
         eventListener.onPlayInlineContent(conversationMessage);
-      } else if (MediaPreviewActivity.isContentTypeSupported(slide.getContentType()) && slide.getUri() != null) {
-        Intent intent = new Intent(context, MediaPreviewActivity.class);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        intent.setDataAndType(slide.getUri(), slide.getContentType());
-        intent.putExtra(MediaPreviewActivity.THREAD_ID_EXTRA, messageRecord.getThreadId());
-        intent.putExtra(MediaPreviewActivity.DATE_EXTRA, messageRecord.getTimestamp());
-        intent.putExtra(MediaPreviewActivity.SIZE_EXTRA, slide.asAttachment().getSize());
-        intent.putExtra(MediaPreviewActivity.CAPTION_EXTRA, slide.getCaption().orElse(null));
-        intent.putExtra(MediaPreviewActivity.IS_VIDEO_GIF, slide.isVideoGif());
-        intent.putExtra(MediaPreviewActivity.LEFT_IS_RECENT_EXTRA, false);
-
-        context.startActivity(intent);
+      } else if (MediaPreviewV2Fragment.isContentTypeSupported(slide.getContentType()) && slide.getUri() != null) {
+        MediaIntentFactory.MediaPreviewArgs args = new MediaIntentFactory.MediaPreviewArgs(
+            messageRecord.getThreadId(),
+            messageRecord.getTimestamp(),
+            slide.getUri(),
+            slide.getContentType(),
+            slide.asAttachment().getSize(),
+            slide.getCaption().orElse(null),
+            false,
+            false,
+            false,
+            false,
+            MediaDatabase.Sorting.Newest,
+            slide.isVideoGif());
+        context.startActivity(MediaIntentFactory.create(context, args));
       } else if (slide.getUri() != null) {
         Log.i(TAG, "Clicked: " + slide.getUri() + " , " + slide.getContentType());
         Uri publicUri = PartAuthority.getAttachmentPublicUri(slide.getUri());
@@ -2337,6 +2349,25 @@ public final class ConversationItem extends RelativeLayout implements BindableCo
           Log.w(TAG, "No activity existed to view the media.");
           Toast.makeText(context, R.string.ConversationItem_unable_to_open_media, Toast.LENGTH_LONG).show();
         }
+      } else if (slide.asAttachment().isPermanentlyFailed()) {
+        String failedMessage;
+
+        if (slide instanceof ImageSlide) {
+          failedMessage = messageRecord.isOutgoing() ? context.getString(R.string.ConversationItem_cant_download_image_you_will_need_to_send_it_again)
+                                                     : context.getString(R.string.ConversationItem_cant_download_image_s_will_need_to_send_it_again, messageRecord.getIndividualRecipient().getShortDisplayName(context));
+        } else if (slide instanceof VideoSlide) {
+          failedMessage = messageRecord.isOutgoing() ? context.getString(R.string.ConversationItem_cant_download_video_you_will_need_to_send_it_again)
+                                                     : context.getString(R.string.ConversationItem_cant_download_video_s_will_need_to_send_it_again, messageRecord.getIndividualRecipient().getShortDisplayName(context));
+        } else {
+          failedMessage = messageRecord.isOutgoing() ? context.getString(R.string.ConversationItem_cant_download_message_you_will_need_to_send_it_again)
+                                                     : context.getString(R.string.ConversationItem_cant_download_message_s_will_need_to_send_it_again, messageRecord.getIndividualRecipient().getShortDisplayName(context));
+        }
+
+        new MaterialAlertDialogBuilder(getContext())
+            .setMessage(failedMessage)
+            .setPositiveButton(android.R.string.ok, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .show();
       }
     }
   }

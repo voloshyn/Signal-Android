@@ -1,5 +1,6 @@
 package org.thoughtcrime.securesms.components.settings.conversation
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.graphics.PorterDuff
@@ -27,7 +28,6 @@ import org.signal.core.util.DimensionUnit
 import org.thoughtcrime.securesms.AvatarPreviewActivity
 import org.thoughtcrime.securesms.BlockUnblockDialog
 import org.thoughtcrime.securesms.InviteActivity
-import org.thoughtcrime.securesms.MediaPreviewActivity
 import org.thoughtcrime.securesms.MuteDialog
 import org.thoughtcrime.securesms.PushContactSelectionActivity
 import org.thoughtcrime.securesms.R
@@ -39,7 +39,6 @@ import org.thoughtcrime.securesms.badges.view.ViewBadgeBottomSheetDialogFragment
 import org.thoughtcrime.securesms.components.AvatarImageView
 import org.thoughtcrime.securesms.components.recyclerview.OnScrollAnimationHelper
 import org.thoughtcrime.securesms.components.settings.DSLConfiguration
-import org.thoughtcrime.securesms.components.settings.DSLSettingsAdapter
 import org.thoughtcrime.securesms.components.settings.DSLSettingsFragment
 import org.thoughtcrime.securesms.components.settings.DSLSettingsIcon
 import org.thoughtcrime.securesms.components.settings.DSLSettingsText
@@ -69,6 +68,7 @@ import org.thoughtcrime.securesms.groups.ui.managegroup.dialogs.GroupInviteSentD
 import org.thoughtcrime.securesms.groups.ui.managegroup.dialogs.GroupsLearnMoreBottomSheetDialogFragment
 import org.thoughtcrime.securesms.groups.ui.migration.GroupsV1MigrationInitiationBottomSheetDialogFragment
 import org.thoughtcrime.securesms.mediaoverview.MediaOverviewActivity
+import org.thoughtcrime.securesms.mediapreview.MediaIntentFactory
 import org.thoughtcrime.securesms.profiles.edit.EditProfileActivity
 import org.thoughtcrime.securesms.recipients.Recipient
 import org.thoughtcrime.securesms.recipients.RecipientExporter
@@ -81,9 +81,9 @@ import org.thoughtcrime.securesms.stories.viewer.StoryViewerActivity
 import org.thoughtcrime.securesms.util.CommunicationActions
 import org.thoughtcrime.securesms.util.ContextUtil
 import org.thoughtcrime.securesms.util.ExpirationUtil
-import org.thoughtcrime.securesms.util.FeatureFlags
 import org.thoughtcrime.securesms.util.Material3OnScrollHelper
 import org.thoughtcrime.securesms.util.ViewUtil
+import org.thoughtcrime.securesms.util.adapter.mapping.MappingAdapter
 import org.thoughtcrime.securesms.util.navigation.safeNavigate
 import org.thoughtcrime.securesms.util.views.SimpleProgressDialog
 import org.thoughtcrime.securesms.verify.VerifyIdentityActivity
@@ -201,7 +201,7 @@ class ConversationSettingsFragment : DSLSettingsFragment(
     }
   }
 
-  override fun bindAdapter(adapter: DSLSettingsAdapter) {
+  override fun bindAdapter(adapter: MappingAdapter) {
     val args = ConversationSettingsFragmentArgs.fromBundle(requireArguments())
 
     BioTextPreference.register(adapter)
@@ -230,7 +230,7 @@ class ConversationSettingsFragment : DSLSettingsFragment(
           .withFixedSize(ViewUtil.dpToPx(80))
           .load(state.recipient)
 
-        if (FeatureFlags.displayDonorBadges() && !state.recipient.isSelf) {
+        if (!state.recipient.isSelf) {
           toolbarBadge.setBadgeFromRecipient(state.recipient)
         }
 
@@ -286,7 +286,8 @@ class ConversationSettingsFragment : DSLSettingsFragment(
                 requireContext(),
                 StoryViewerArgs(
                   recipientId = state.recipient.id,
-                  isInHiddenStoryMode = state.recipient.shouldHideStory()
+                  isInHiddenStoryMode = state.recipient.shouldHideStory(),
+                  isFromQuote = true
                 )
               )
               StoryDialogs.displayStoryOrProfileImage(
@@ -420,7 +421,7 @@ class ConversationSettingsFragment : DSLSettingsFragment(
         enabled = it.canEditGroupAttributes && !state.recipient.isBlocked
       }
 
-      if (!state.recipient.isReleaseNotes) {
+      if (!state.recipient.isReleaseNotes && !state.recipient.isBlocked) {
         clickPref(
           title = DSLSettingsText.from(R.string.ConversationSettingsFragment__disappearing_messages),
           summary = summary,
@@ -477,7 +478,11 @@ class ConversationSettingsFragment : DSLSettingsFragment(
               title = DSLSettingsText.from(R.string.ConversationSettingsFragment__add_as_a_contact),
               icon = DSLSettingsIcon.from(R.drawable.ic_plus_24),
               onClick = {
-                startActivityForResult(RecipientExporter.export(state.recipient).asAddContactIntent(), REQUEST_CODE_ADD_CONTACT)
+                try {
+                  startActivityForResult(RecipientExporter.export(state.recipient).asAddContactIntent(), REQUEST_CODE_ADD_CONTACT)
+                } catch (e: ActivityNotFoundException) {
+                  Toast.makeText(context, R.string.ConversationSettingsFragment__contacts_app_not_found, Toast.LENGTH_SHORT).show()
+                }
               }
             )
           }
@@ -508,7 +513,7 @@ class ConversationSettingsFragment : DSLSettingsFragment(
             mediaIds = state.sharedMediaIds,
             onMediaRecordClick = { mediaRecord, isLtr ->
               startActivityForResult(
-                MediaPreviewActivity.intentFromMediaRecord(requireContext(), mediaRecord, isLtr),
+                MediaIntentFactory.intentFromMediaRecord(requireContext(), mediaRecord, isLtr),
                 REQUEST_CODE_RETURN_FROM_MEDIA
               )
             }
@@ -557,15 +562,17 @@ class ConversationSettingsFragment : DSLSettingsFragment(
             )
           )
 
-          customPref(
-            LargeIconClickPreference.Model(
-              title = DSLSettingsText.from(R.string.ConversationSettingsFragment__add_to_a_group),
-              icon = DSLSettingsIcon.from(R.drawable.add_to_a_group, NO_TINT),
-              onClick = {
-                viewModel.onAddToGroup()
-              }
+          if (!state.recipient.isBlocked) {
+            customPref(
+              LargeIconClickPreference.Model(
+                title = DSLSettingsText.from(R.string.ConversationSettingsFragment__add_to_a_group),
+                icon = DSLSettingsIcon.from(R.drawable.add_to_a_group, NO_TINT),
+                onClick = {
+                  viewModel.onAddToGroup()
+                }
+              )
             )
-          )
+          }
 
           for (group in recipientSettingsState.groupsInCommon) {
             customPref(

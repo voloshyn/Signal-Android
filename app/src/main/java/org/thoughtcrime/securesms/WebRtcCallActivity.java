@@ -24,7 +24,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
-import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.media.AudioManager;
 import android.os.Build;
@@ -40,15 +39,18 @@ import androidx.appcompat.app.AppCompatDelegate;
 import androidx.core.content.ContextCompat;
 import androidx.core.util.Consumer;
 import androidx.lifecycle.ViewModelProvider;
-import androidx.window.DisplayFeature;
-import androidx.window.FoldingFeature;
-import androidx.window.WindowLayoutInfo;
+import androidx.window.java.layout.WindowInfoTrackerCallbackAdapter;
+import androidx.window.layout.DisplayFeature;
+import androidx.window.layout.FoldingFeature;
+import androidx.window.layout.WindowInfoTracker;
+import androidx.window.layout.WindowLayoutInfo;
 
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 import org.greenrobot.eventbus.EventBus;
 import org.greenrobot.eventbus.Subscribe;
 import org.greenrobot.eventbus.ThreadMode;
+import org.signal.core.util.ThreadUtil;
 import org.signal.core.util.concurrent.SignalExecutors;
 import org.signal.core.util.logging.Log;
 import org.signal.libsignal.protocol.IdentityKey;
@@ -62,6 +64,7 @@ import org.thoughtcrime.securesms.components.webrtc.WebRtcAudioOutput;
 import org.thoughtcrime.securesms.components.webrtc.WebRtcCallView;
 import org.thoughtcrime.securesms.components.webrtc.WebRtcCallViewModel;
 import org.thoughtcrime.securesms.components.webrtc.WebRtcControls;
+import org.thoughtcrime.securesms.components.webrtc.WifiToCellularPopupWindow;
 import org.thoughtcrime.securesms.components.webrtc.participantslist.CallParticipantsListDialog;
 import org.thoughtcrime.securesms.conversation.ui.error.SafetyNumberChangeDialog;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
@@ -70,6 +73,7 @@ import org.thoughtcrime.securesms.messagerequests.CalleeMustAcceptMessageRequest
 import org.thoughtcrime.securesms.permissions.Permissions;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientId;
+import org.thoughtcrime.securesms.safety.SafetyNumberBottomSheet;
 import org.thoughtcrime.securesms.service.webrtc.SignalCallManager;
 import org.thoughtcrime.securesms.sms.MessageSender;
 import org.thoughtcrime.securesms.util.EllapsedTimeFormatter;
@@ -105,19 +109,21 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
   public static final String END_CALL_ACTION = WebRtcCallActivity.class.getCanonicalName() + ".END_CALL_ACTION";
 
   public static final String EXTRA_ENABLE_VIDEO_IF_AVAILABLE = WebRtcCallActivity.class.getCanonicalName() + ".ENABLE_VIDEO_IF_AVAILABLE";
+  public static final String EXTRA_STARTED_FROM_FULLSCREEN   = WebRtcCallActivity.class.getCanonicalName() + ".STARTED_FROM_FULLSCREEN";
 
   private CallParticipantsListUpdatePopupWindow participantUpdateWindow;
+  private WifiToCellularPopupWindow             wifiToCellularPopupWindow;
   private DeviceOrientationMonitor              deviceOrientationMonitor;
 
-  private FullscreenHelper              fullscreenHelper;
-  private WebRtcCallView                callScreen;
-  private TooltipPopup                  videoTooltip;
-  private WebRtcCallViewModel           viewModel;
-  private boolean                       enableVideoIfAvailable;
-  private boolean                       hasWarnedAboutBluetooth;
-  private androidx.window.WindowManager windowManager;
-  private WindowLayoutInfoConsumer      windowLayoutInfoConsumer;
-  private ThrottledDebouncer            requestNewSizesThrottle;
+  private FullscreenHelper                 fullscreenHelper;
+  private WebRtcCallView                   callScreen;
+  private TooltipPopup                     videoTooltip;
+  private WebRtcCallViewModel              viewModel;
+  private boolean                          enableVideoIfAvailable;
+  private boolean                          hasWarnedAboutBluetooth;
+  private WindowLayoutInfoConsumer         windowLayoutInfoConsumer;
+  private WindowInfoTrackerCallbackAdapter windowInfoTrackerCallbackAdapter;
+  private ThrottledDebouncer               requestNewSizesThrottle;
 
   private Disposable ephemeralStateDisposable = Disposable.empty();
 
@@ -130,7 +136,7 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
   @SuppressLint("SourceLockedOrientationActivity")
   @Override
   public void onCreate(Bundle savedInstanceState) {
-    Log.i(TAG, "onCreate()");
+    Log.i(TAG, "onCreate(" + getIntent().getBooleanExtra(EXTRA_STARTED_FROM_FULLSCREEN, false) + ")");
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED);
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     super.onCreate(savedInstanceState);
@@ -155,10 +161,10 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
     enableVideoIfAvailable = getIntent().getBooleanExtra(EXTRA_ENABLE_VIDEO_IF_AVAILABLE, false);
     getIntent().removeExtra(EXTRA_ENABLE_VIDEO_IF_AVAILABLE);
 
-    windowManager            = new androidx.window.WindowManager(this);
     windowLayoutInfoConsumer = new WindowLayoutInfoConsumer();
 
-    windowManager.registerLayoutChangeCallback(SignalExecutors.BOUNDED, windowLayoutInfoConsumer);
+    windowInfoTrackerCallbackAdapter = new WindowInfoTrackerCallbackAdapter(WindowInfoTracker.getOrCreate(this));
+    windowInfoTrackerCallbackAdapter.addWindowLayoutInfoListener(this, SignalExecutors.BOUNDED, windowLayoutInfoConsumer);
 
     requestNewSizesThrottle = new ThrottledDebouncer(TimeUnit.SECONDS.toMillis(1));
   }
@@ -182,11 +188,25 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
     if (!EventBus.getDefault().isRegistered(this)) {
       EventBus.getDefault().register(this);
     }
+
+    WebRtcViewModel rtcViewModel = EventBus.getDefault().getStickyEvent(WebRtcViewModel.class);
+    if (rtcViewModel == null) {
+      Log.w(TAG, "Activity resumed without service event, perform delay destroy");
+      ThreadUtil.runOnMainDelayed(() -> {
+        WebRtcViewModel delayRtcViewModel = EventBus.getDefault().getStickyEvent(WebRtcViewModel.class);
+        if (delayRtcViewModel == null) {
+          Log.w(TAG, "Activity still without service event, finishing activity");
+          finish();
+        } else {
+          Log.i(TAG, "Event found after delay");
+        }
+      }, TimeUnit.SECONDS.toMillis(1));
+    }
   }
 
   @Override
   public void onNewIntent(Intent intent) {
-    Log.i(TAG, "onNewIntent");
+    Log.i(TAG, "onNewIntent(" + intent.getBooleanExtra(EXTRA_STARTED_FROM_FULLSCREEN, false) + ")");
     super.onNewIntent(intent);
     processIntent(intent);
   }
@@ -231,7 +251,7 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
   @Override
   protected void onDestroy() {
     super.onDestroy();
-    windowManager.unregisterLayoutChangeCallback(windowLayoutInfoConsumer);
+    windowInfoTrackerCallbackAdapter.removeWindowLayoutInfoListener(windowLayoutInfoConsumer);
     EventBus.getDefault().unregister(this);
   }
 
@@ -251,12 +271,6 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
     if (!enterPipModeIfPossible()) {
       super.onBackPressed();
     }
-  }
-
-  @Override
-  public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
-    viewModel.setIsInPipMode(isInPictureInPictureMode);
-    participantUpdateWindow.setEnabled(!isInPictureInPictureMode);
   }
 
   private boolean enterPipModeIfPossible() {
@@ -298,7 +312,8 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
     callScreen = findViewById(R.id.callScreen);
     callScreen.setControlsListener(new ControlsListener());
 
-    participantUpdateWindow = new CallParticipantsListUpdatePopupWindow(callScreen);
+    participantUpdateWindow   = new CallParticipantsListUpdatePopupWindow(callScreen);
+    wifiToCellularPopupWindow = new WifiToCellularPopupWindow(callScreen);
   }
 
   private void initializeViewModel(boolean isLandscapeEnabled) {
@@ -337,6 +352,11 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
 
     viewModel.getOrientationAndLandscapeEnabled().observe(this, pair -> ApplicationDependencies.getSignalCallManager().orientationChanged(pair.second, pair.first.getDegrees()));
     viewModel.getControlsRotation().observe(this, callScreen::rotateControls);
+
+    addOnPictureInPictureModeChangedListener(info -> {
+      viewModel.setIsInPipMode(info.isInPictureInPictureMode());
+      participantUpdateWindow.setEnabled(!info.isInPictureInPictureMode());
+    });
   }
 
   private void handleViewModelEvent(@NonNull WebRtcCallViewModel.Event event) {
@@ -344,7 +364,8 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
       startCall(((WebRtcCallViewModel.Event.StartCall) event).isVideoCall());
       return;
     } else if (event instanceof WebRtcCallViewModel.Event.ShowGroupCallSafetyNumberChange) {
-      SafetyNumberChangeDialog.showForGroupCall(getSupportFragmentManager(), ((WebRtcCallViewModel.Event.ShowGroupCallSafetyNumberChange) event).getIdentityRecords());
+      SafetyNumberBottomSheet.forGroupCall(((WebRtcCallViewModel.Event.ShowGroupCallSafetyNumberChange) event).getIdentityRecords())
+                             .show(getSupportFragmentManager());
       return;
     } else if (event instanceof WebRtcCallViewModel.Event.SwitchToSpeaker) {
       callScreen.switchToSpeakerView();
@@ -373,6 +394,8 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
         videoTooltip.dismiss();
         videoTooltip = null;
       }
+    } else if (event instanceof WebRtcCallViewModel.Event.ShowWifiToCellularPopup) {
+      wifiToCellularPopupWindow.show();
     } else {
       throw new IllegalArgumentException("Unknown event: " + event);
     }
@@ -557,11 +580,10 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
     final Recipient   recipient = event.getRemoteParticipants().get(0).getRecipient();
 
     if (theirKey == null) {
-      Log.w(TAG, "Untrusted identity without an identity key, terminating call.");
-      handleTerminate(recipient, HangupMessage.Type.NORMAL);
+      Log.w(TAG, "Untrusted identity without an identity key.");
     }
 
-    SafetyNumberChangeDialog.showForCall(getSupportFragmentManager(), recipient.getId());
+    SafetyNumberBottomSheet.forCall(recipient.getId()).show(getSupportFragmentManager());
   }
 
   public void handleSafetyNumberChangeEvent(@NonNull WebRtcCallViewModel.SafetyNumberChangeEvent safetyNumberChangeEvent) {
@@ -570,7 +592,7 @@ public class WebRtcCallActivity extends BaseActivity implements SafetyNumberChan
         GroupCallSafetyNumberChangeNotificationUtil.showNotification(this, viewModel.getRecipient().get());
       } else {
         GroupCallSafetyNumberChangeNotificationUtil.cancelNotification(this, viewModel.getRecipient().get());
-        SafetyNumberChangeDialog.showForDuringGroupCall(getSupportFragmentManager(), safetyNumberChangeEvent.getRecipientIds());
+        SafetyNumberBottomSheet.forDuringGroupCall(safetyNumberChangeEvent.getRecipientIds()).show(getSupportFragmentManager());
       }
     }
   }

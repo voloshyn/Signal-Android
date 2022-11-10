@@ -2,6 +2,9 @@ package org.thoughtcrime.securesms.jobs
 
 import androidx.core.os.LocaleListCompat
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ObjectNode
+import org.json.JSONObject
 import org.signal.core.util.Hex
 import org.signal.core.util.ThreadUtil
 import org.signal.core.util.logging.Log
@@ -40,7 +43,7 @@ class RetrieveRemoteAnnouncementsJob private constructor(private val force: Bool
 
   companion object {
     const val KEY = "RetrieveReleaseChannelJob"
-    private const val MANIFEST = "${S3.DYNAMIC_PATH}/release-notes/release-notes.json"
+    private const val MANIFEST = "${S3.DYNAMIC_PATH}/release-notes/release-notes-v2.json"
     private const val BASE_RELEASE_NOTE = "${S3.STATIC_PATH}/release-notes"
     private const val KEY_FORCE = "force"
 
@@ -199,7 +202,7 @@ class RetrieveRemoteAnnouncementsJob private constructor(private val force: Bool
         }
 
         ThreadUtil.sleep(5)
-        val insertResult: MessageDatabase.InsertResult? = ReleaseChannel.insertAnnouncement(
+        val insertResult: MessageDatabase.InsertResult? = ReleaseChannel.insertReleaseChannelMessage(
           recipientId = values.releaseChannelRecipientId!!,
           body = body,
           threadId = threadId,
@@ -210,7 +213,7 @@ class RetrieveRemoteAnnouncementsJob private constructor(private val force: Bool
         )
 
         if (insertResult != null) {
-          addedNewNotes = true
+          addedNewNotes = addedNewNotes || (note.releaseNote.includeBoostMessage ?: true)
           SignalDatabase.attachments.getAttachmentsForMessage(insertResult.messageId)
             .forEach { ApplicationDependencies.getJobManager().add(AttachmentDownloadJob(insertResult.messageId, it.attachmentId, false)) }
 
@@ -275,7 +278,9 @@ class RetrieveRemoteAnnouncementsJob private constructor(private val force: Bool
             title = megaphone.translation.title,
             body = megaphone.translation.body,
             primaryActionText = megaphone.translation.primaryCtaText,
-            secondaryActionText = megaphone.translation.secondaryCtaText
+            secondaryActionText = megaphone.translation.secondaryCtaText,
+            primaryActionData = megaphone.remoteMegaphone.primaryCtaData?.takeIf { it is ObjectNode }?.let { JSONObject(it.toString()) },
+            secondaryActionData = megaphone.remoteMegaphone.secondaryCtaData?.takeIf { it is ObjectNode }?.let { JSONObject(it.toString()) }
           )
 
           SignalDatabase.remoteMegaphones.insert(record)
@@ -345,7 +350,7 @@ class RetrieveRemoteAnnouncementsJob private constructor(private val force: Bool
     }
 
     for (index in 0 until localeList.size()) {
-      val locale: Locale = localeList.get(index)
+      val locale: Locale = localeList.get(index) ?: continue
       if (locale.language.isNotEmpty()) {
         if (locale.country.isNotEmpty()) {
           potentialNoteUrls += "$this/${locale.language}_${locale.country}.json"
@@ -370,7 +375,8 @@ class RetrieveRemoteAnnouncementsJob private constructor(private val force: Bool
     @JsonProperty val countries: String?,
     @JsonProperty val androidMinVersion: String?,
     @JsonProperty val link: String?,
-    @JsonProperty val ctaId: String?
+    @JsonProperty val ctaId: String?,
+    @JsonProperty val includeBoostMessage: Boolean?
   )
 
   data class RemoteMegaphone(
@@ -383,7 +389,9 @@ class RetrieveRemoteAnnouncementsJob private constructor(private val force: Bool
     @JsonProperty val showForNumberOfDays: Long?,
     @JsonProperty val conditionalId: String?,
     @JsonProperty val primaryCtaId: String?,
-    @JsonProperty val secondaryCtaId: String?
+    @JsonProperty val secondaryCtaId: String?,
+    @JsonProperty val primaryCtaData: JsonNode?,
+    @JsonProperty val secondaryCtaData: JsonNode?
   )
 
   data class TranslatedReleaseNote(

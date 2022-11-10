@@ -10,9 +10,7 @@ import io.reactivex.rxjava3.schedulers.Schedulers
 import org.thoughtcrime.securesms.conversation.ConversationMessage
 import org.thoughtcrime.securesms.conversation.colors.GroupAuthorNameColorHelper
 import org.thoughtcrime.securesms.conversation.colors.NameColor
-import org.thoughtcrime.securesms.database.SignalDatabase
 import org.thoughtcrime.securesms.database.model.MessageId
-import org.thoughtcrime.securesms.database.model.MessageRecord
 import org.thoughtcrime.securesms.recipients.Recipient
 import org.thoughtcrime.securesms.recipients.RecipientId
 
@@ -23,27 +21,11 @@ class MessageQuotesViewModel(
 ) : AndroidViewModel(application) {
 
   private val groupAuthorNameColorHelper = GroupAuthorNameColorHelper()
+  private val repository = MessageQuotesRepository()
 
   fun getMessages(): Observable<List<ConversationMessage>> {
-    return Observable.create<List<ConversationMessage>> { emitter ->
-      val quotes: List<ConversationMessage> = SignalDatabase
-        .mmsSms
-        .getAllMessagesThatQuote(messageId)
-        .map { ConversationMessage.ConversationMessageFactory.createWithUnresolvedData(getApplication(), it) }
-
-      val originalRecord: MessageRecord? = if (messageId.mms) {
-        SignalDatabase.mms.getMessageRecordOrNull(messageId.id)
-      } else {
-        SignalDatabase.sms.getMessageRecordOrNull(messageId.id)
-      }
-
-      if (originalRecord != null) {
-        val originalMessage: ConversationMessage = ConversationMessage.ConversationMessageFactory.createWithUnresolvedData(getApplication(), originalRecord, originalRecord.getDisplayBody(getApplication()), 0)
-        emitter.onNext(quotes + listOf(originalMessage))
-      } else {
-        emitter.onNext(quotes)
-      }
-    }
+    return repository
+      .getMessagesInQuoteChain(getApplication(), messageId)
       .subscribeOn(Schedulers.io())
       .observeOn(AndroidSchedulers.mainThread())
   }

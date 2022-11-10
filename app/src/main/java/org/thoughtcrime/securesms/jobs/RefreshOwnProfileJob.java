@@ -6,9 +6,8 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import org.signal.core.util.logging.Log;
-import org.signal.libsignal.zkgroup.profiles.PniCredential;
+import org.signal.libsignal.zkgroup.profiles.ExpiringProfileKeyCredential;
 import org.signal.libsignal.zkgroup.profiles.ProfileKey;
-import org.signal.libsignal.zkgroup.profiles.ProfileKeyCredential;
 import org.thoughtcrime.securesms.badges.BadgeRepository;
 import org.thoughtcrime.securesms.badges.Badges;
 import org.thoughtcrime.securesms.badges.models.Badge;
@@ -33,14 +32,13 @@ import org.whispersystems.signalservice.api.profiles.ProfileAndCredential;
 import org.whispersystems.signalservice.api.profiles.SignalServiceProfile;
 import org.whispersystems.signalservice.api.push.exceptions.PushNetworkException;
 import org.whispersystems.signalservice.api.subscriptions.ActiveSubscription;
+import org.whispersystems.signalservice.api.util.ExpiringProfileCredentialUtil;
 import org.whispersystems.signalservice.internal.ServiceResponse;
-import org.whispersystems.signalservice.internal.ServiceResponseProcessor;
 
 import java.io.IOException;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -122,6 +120,14 @@ public class RefreshOwnProfileJob extends BaseJob {
         Util.isEmpty(profile.getAboutEmoji()))
     {
       Log.w(TAG, "The profile we retrieved was empty! Ignoring it.");
+
+      if (!self.getProfileName().isEmpty()) {
+        Log.w(TAG, "We have a name locally. Scheduling a profile upload.");
+        ApplicationDependencies.getJobManager().add(new ProfileUploadJob());
+      } else {
+        Log.w(TAG, "We don't have a name locally, either!");
+      }
+
       return;
     }
 
@@ -132,35 +138,26 @@ public class RefreshOwnProfileJob extends BaseJob {
     setProfileBadges(profile.getBadges());
     ensureUnidentifiedAccessCorrect(profile.getUnidentifiedAccess(), profile.isUnrestrictedUnidentifiedAccess());
 
-    Optional<ProfileKeyCredential> profileKeyCredential = profileAndCredential.getProfileKeyCredential();
-    if (profileKeyCredential.isPresent()) {
-      setProfileKeyCredential(self, ProfileKeyUtil.getSelfProfileKey(), profileKeyCredential.get());
-    }
+    profileAndCredential.getExpiringProfileKeyCredential()
+                        .ifPresent(expiringProfileKeyCredential -> setExpiringProfileKeyCredential(self, ProfileKeyUtil.getSelfProfileKey(), expiringProfileKeyCredential));
 
-    if (SignalStore.account().getAci() != null) {
-      PniCredential pniCredential = ApplicationDependencies.getProfileService()
-                                                           .getPniProfileCredential(SignalStore.account().requireAci(),
-                                                                                    SignalStore.account().requirePni(),
-                                                                                    ProfileKeyUtil.getSelfProfileKey())
-                                                           .map(ServiceResponseProcessor.DefaultProcessor::new)
-                                                           .blockingGet()
-                                                           .getResultOrThrow();
-      SignalStore.account().setPniCredential(pniCredential);
-    }
+    String username = ApplicationDependencies.getSignalServiceAccountManager().getWhoAmI().getUsername();
+    SignalDatabase.recipients().setUsername(Recipient.self().getId(), username);
+
+    StoryOnboardingDownloadJob.Companion.enqueueIfNeeded();
   }
 
-  private void setProfileKeyCredential(@NonNull Recipient recipient,
-                                       @NonNull ProfileKey recipientProfileKey,
-                                       @NonNull ProfileKeyCredential credential)
+  private void setExpiringProfileKeyCredential(@NonNull Recipient recipient,
+                                               @NonNull ProfileKey recipientProfileKey,
+                                               @NonNull ExpiringProfileKeyCredential credential)
   {
     RecipientDatabase recipientDatabase = SignalDatabase.recipients();
     recipientDatabase.setProfileKeyCredential(recipient.getId(), recipientProfileKey, credential);
   }
 
   private static SignalServiceProfile.RequestType getRequestType(@NonNull Recipient recipient) {
-    return !recipient.hasProfileKeyCredential()
-           ? SignalServiceProfile.RequestType.PROFILE_AND_CREDENTIAL
-           : SignalServiceProfile.RequestType.PROFILE;
+    return ExpiringProfileCredentialUtil.isValid(recipient.getExpiringProfileKeyCredential()) ? SignalServiceProfile.RequestType.PROFILE
+                                                                                              : SignalServiceProfile.RequestType.PROFILE_AND_CREDENTIAL;
   }
 
   @Override
@@ -290,8 +287,7 @@ public class RefreshOwnProfileJob extends BaseJob {
         boolean isDueToPaymentFailure = false;
         if (subscriber != null) {
           ServiceResponse<ActiveSubscription> response = ApplicationDependencies.getDonationsService()
-                                                                                .getSubscription(subscriber.getSubscriberId())
-                                                                                .blockingGet();
+                                                                                .getSubscription(subscriber.getSubscriberId());
 
           if (response.getResult().isPresent()) {
             ActiveSubscription activeSubscription = response.getResult().get();

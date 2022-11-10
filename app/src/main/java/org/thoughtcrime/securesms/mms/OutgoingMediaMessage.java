@@ -193,6 +193,14 @@ public class OutgoingMediaMessage {
     return false;
   }
 
+  public boolean isRequestToActivatePayments() {
+    return false;
+  }
+
+  public boolean isPaymentsActivated() {
+    return false;
+  }
+
   public long getSentTimeMillis() {
     return sentTimeMillis;
   }
@@ -247,6 +255,10 @@ public class OutgoingMediaMessage {
 
   public @Nullable GiftBadge getGiftBadge() {
     return giftBadge;
+  }
+
+  public boolean isUrgent() {
+    return true;
   }
 
   private static String buildMessage(SlideDeck slideDeck, String message) {

@@ -46,6 +46,7 @@ import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 import org.whispersystems.signalservice.api.push.exceptions.ProofRequiredException;
 import org.whispersystems.signalservice.api.push.exceptions.ServerRejectedException;
 import org.whispersystems.signalservice.api.push.exceptions.UnregisteredUserException;
+import org.whispersystems.signalservice.internal.push.SignalServiceProtos;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -124,7 +125,7 @@ public class PushMediaSendJob extends PushSendJob {
     try {
       log(TAG, String.valueOf(message.getSentTimeMillis()), "Sending message: " + messageId + ", Recipient: " + message.getRecipient().getId() + ", Thread: " + threadId + ", Attachments: " + buildAttachmentString(message.getAttachments()));
 
-      RecipientUtil.shareProfileIfFirstSecureMessage(context, message.getRecipient());
+      RecipientUtil.shareProfileIfFirstSecureMessage(message.getRecipient());
 
       Recipient              recipient  = message.getRecipient().fresh();
       byte[]                 profileKey = recipient.getProfileKey();
@@ -212,6 +213,7 @@ public class PushMediaSendJob extends PushSendJob {
       List<SharedContact>                        sharedContacts      = getSharedContactsFor(message);
       List<SignalServicePreview>                 previews            = getPreviewsFor(message);
       SignalServiceDataMessage.GiftBadge         giftBadge           = getGiftBadgeFor(message);
+      SignalServiceDataMessage.Payment           payment             = getPaymentActivation(message);
       SignalServiceDataMessage.Builder           mediaMessageBuilder = SignalServiceDataMessage.newBuilder()
                                                                                                .withBody(message.getBody())
                                                                                                .withAttachments(serviceAttachments)
@@ -223,7 +225,8 @@ public class PushMediaSendJob extends PushSendJob {
                                                                                                .withSharedContacts(sharedContacts)
                                                                                                .withPreviews(previews)
                                                                                                .withGiftBadge(giftBadge)
-                                                                                               .asExpirationUpdate(message.isExpirationUpdate());
+                                                                                               .asExpirationUpdate(message.isExpirationUpdate())
+                                                                                               .withPayment(payment);
 
       if (message.getParentStoryId() != null) {
         try {
@@ -254,11 +257,17 @@ public class PushMediaSendJob extends PushSendJob {
       if (Util.equals(SignalStore.account().getAci(), address.getServiceId())) {
         Optional<UnidentifiedAccessPair> syncAccess = UnidentifiedAccessUtil.getAccessForSync(context);
         SendMessageResult                result     = messageSender.sendSyncMessage(mediaMessage);
-        SignalDatabase.messageLog().insertIfPossible(messageRecipient.getId(), message.getSentTimeMillis(), result, ContentHint.RESENDABLE, new MessageId(messageId, true));
+        SignalDatabase.messageLog().insertIfPossible(messageRecipient.getId(), message.getSentTimeMillis(), result, ContentHint.RESENDABLE, new MessageId(messageId, true), false);
         return syncAccess.isPresent();
       } else {
-        SendMessageResult result = messageSender.sendDataMessage(address, UnidentifiedAccessUtil.getAccessFor(context, messageRecipient), ContentHint.RESENDABLE, mediaMessage, IndividualSendEvents.EMPTY);
-        SignalDatabase.messageLog().insertIfPossible(messageRecipient.getId(), message.getSentTimeMillis(), result, ContentHint.RESENDABLE, new MessageId(messageId, true));
+        SendMessageResult result = messageSender.sendDataMessage(address, UnidentifiedAccessUtil.getAccessFor(context, messageRecipient), ContentHint.RESENDABLE, mediaMessage, IndividualSendEvents.EMPTY, message.isUrgent(), messageRecipient.needsPniSignature());
+
+        SignalDatabase.messageLog().insertIfPossible(messageRecipient.getId(), message.getSentTimeMillis(), result, ContentHint.RESENDABLE, new MessageId(messageId, true), message.isUrgent());
+
+        if (messageRecipient.needsPniSignature()) {
+          SignalDatabase.pendingPniSignatureMessages().insertIfNecessary(messageRecipient.getId(), message.getSentTimeMillis(), result);
+        }
+
         return result.getSuccess().isUnidentified();
       }
     } catch (UnregisteredUserException e) {
@@ -269,6 +278,22 @@ public class PushMediaSendJob extends PushSendJob {
       throw new UndeliverableMessageException(e);
     } catch (ServerRejectedException e) {
       throw new UndeliverableMessageException(e);
+    }
+  }
+
+  private SignalServiceDataMessage.Payment getPaymentActivation(OutgoingMediaMessage message) {
+    SignalServiceProtos.DataMessage.Payment.Activation.Type type = null;
+
+    if (message.isRequestToActivatePayments()) {
+      type = SignalServiceProtos.DataMessage.Payment.Activation.Type.REQUEST;
+    } else if (message.isPaymentsActivated()) {
+      type = SignalServiceProtos.DataMessage.Payment.Activation.Type.ACTIVATED;
+    }
+
+    if (type != null) {
+      return new SignalServiceDataMessage.Payment(null, new SignalServiceDataMessage.PaymentActivation(type));
+    } else {
+      return null;
     }
   }
 
